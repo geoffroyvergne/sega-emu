@@ -22,13 +22,19 @@ FetchContent_Declare(SDL3
 )
 FetchContent_MakeAvailable(SDL3)
 
+# Input handling is a separate library so tests can drive it with SDL's
+# virtual gamepads.
+add_library(md_frontend_input STATIC src/input.cpp)
+target_include_directories(md_frontend_input PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(md_frontend_input PUBLIC md::core SDL3::SDL3 PRIVATE md::warnings)
+
 add_executable(megadrive
     src/main.cpp
 )
 
 target_link_libraries(megadrive
     PRIVATE
-        md::core
+        md_frontend_input   # brings md::core
         md::warnings
         SDL3::SDL3   # provided both by the installed config package and the source build
 )

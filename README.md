@@ -25,7 +25,7 @@ The longer-term roadmap includes Mega-CD support (a second 68000, the graphics A
 | VDP: interrupts and timing | ✅ VINT (level 6) and HINT (level 4) from a cycle-based line counter, NTSC and PAL |
 | VDP: DMA | ✅ 68000 → VRAM/CRAM/VSRAM (128 KB source wrap), VRAM fill, VRAM copy. Instant: the 68000 is not stalled |
 | VDP: rendering | 🟡 Planes A/B with full/per-cell/per-line horizontal scroll and full/per-2-cell vertical scroll, window, tile flips, palettes, priority, left-column blank. Sprites: link list, 1–4×1–4 cells, flips, per-line sprite and pixel limits, X=0 masking, overflow/collision flags. No shadow/highlight, no interlace, no sprite attribute cache |
-| Controllers | ✅ 3-button and 6-button pads on ports A and B (TH-line protocol, 6-button phase counter with ~1.5 ms timeout). 6-button by default; `--3button` for the few old games that misread 6-button pads. Only player 1 is mapped to the keyboard |
+| Controllers | ✅ 3-button and 6-button pads on ports A and B (TH-line protocol, 6-button phase counter with ~1.5 ms timeout). 6-button by default; `--3button` for the few old games that misread 6-button pads. Keyboard for player 1, plus physical gamepads (SDL3) for players 1 and 2, with hot-plugging |
 | Z80 CPU | ✅ [superzazu/z80](https://github.com/superzazu/z80) core. Full Z80 memory map: RAM, YM2612, bank register and 68000 window, VDP/PSG. VBlank interrupt; paused while the 68000 holds its bus; reset line |
 | Sound | ✅ YM2612 via [ymfm](https://github.com/aaronsgiles/ymfm), including the DAC, timers and the model 1 "ladder effect". SN76489 PSG (own implementation). The chips are brought up to the current emulated time before every access, so DAC samples play at the right timing. DC-blocking output filter. Stereo, ~53.3 kHz |
 | Cartridge extras | ❌ No battery-backed save RAM, no bank switching for ROMs over 4 MB, no TMSS |
@@ -104,8 +104,8 @@ sega-emu/
 │   │   └── video/vdp.cpp
 │   └── third_party/moira/MoiraConfig.h   # our Moira build settings (see below)
 ├── frontend/                      # megadrive — SDL3 executable (the only code that uses SDL)
-│   └── src/main.cpp
-└── tests/                         # core_tests — dependency-free unit and integration tests
+│   └── src/main.cpp, input.cpp (keyboard + gamepads), pad_mapping.hpp
+└── tests/                         # core_tests (no SDL) + frontend_tests (SDL input)
 ```
 
 ## Building
@@ -138,7 +138,7 @@ cmake --build build-release -j
 | Option | Default | Effect |
 |---|---|---|
 | `MD_BUILD_FRONTEND` | `ON` | Build the SDL3 executable. Turn it off to build only the core and tests, with no SDL needed. |
-| `MD_BUILD_TESTS` | `ON` | Build `core_tests` and register it with CTest |
+| `MD_BUILD_TESTS` | `ON` | Build `core_tests` (and `frontend_tests` when the frontend is built), and register them with CTest |
 | `MD_FETCH_SDL` | `OFF` | Always build SDL3 from source (pinned `release-3.2.10`) instead of using an installed copy |
 | `MD_WARNINGS_AS_ERRORS` | `OFF` | Add `-Werror` / `/WX`. The code currently builds cleanly with it. |
 
@@ -197,15 +197,26 @@ The window opens at 3× (960×672). Press **F2** to cycle the scaling mode, whic
 
 With SDL 3.4 or newer, non-integer scales use SDL's pixel-art filter, which keeps pixels sharp without uneven rows.
 
-### Controls (player 1)
+### Controls
 
-| Mega Drive | Keyboard |
+Player 1 uses the keyboard and/or the first gamepad connected. Player 2 uses the second gamepad. Gamepads can be plugged in or unplugged while a game runs; the terminal shows which player each one is assigned to.
+
+| Mega Drive | Keyboard | Gamepad (by position) | Xbox | PlayStation | Switch |
+|---|---|---|---|---|---|
+| D-pad | Arrow keys | D-pad or left stick | | | |
+| A | A | Left face button | X | □ | Y |
+| B | S | Bottom face button | A | ✕ | B |
+| C | D | Right face button | B | ○ | A |
+| X | Q | Left shoulder | LB | L1 | L |
+| Y | W | Top face button | Y | △ | X |
+| Z | E | Right shoulder | RB | R1 | R |
+| Start | Enter | Start | Menu | Options | + |
+| Mode | Right Shift | Back | View | Share | − |
+
+Gamepad buttons are mapped by **position**, the same layout RetroArch uses for the Mega Drive: A, B and C follow the arc of the face buttons, whatever their labels. SDL3 recognises most USB and Bluetooth pads. For an unusual one, put a [`gamecontrollerdb.txt`](https://github.com/mdqinc/SDL_GameControllerDB) in the directory you run the emulator from.
+
+| Emulator | Keyboard |
 |---|---|
-| D-pad | Arrow keys |
-| A / B / C | A / S / D |
-| X / Y / Z | Q / W / E |
-| Start | Enter |
-| Mode | Right Shift |
 | Toggle fullscreen | F11, Alt/Option+Enter, or Cmd+F |
 | Cycle scaling (Fit / Stretch / Integer) | F2 |
 | Mute / unmute sound | M |
@@ -217,9 +228,10 @@ With SDL 3.4 or newer, non-integer scales use SDL's pixel-art filter, which keep
 ctest --test-dir build --output-on-failure
 # or, for a per-test listing:
 ./build/tests/core_tests
+./build/tests/frontend_tests
 ```
 
-There are 99 tests, using a small built-in framework ([`tests/test.hpp`](tests/test.hpp), no external dependency):
+There are 105 tests (99 core, 6 frontend), using a small built-in framework ([`tests/test.hpp`](tests/test.hpp), no external dependency):
 
 - [`memory_tests.cpp`](tests/memory_tests.cpp): byte order, mirroring, 24-bit address wrap, Z80 bus arbitration, I/O registers, VDP/PSG port decoding.
 - [`cpu_tests.cpp`](tests/cpu_tests.cpp): hand-assembled 68000 programs run through Moira → bridge → Memory. Covers reset vectors, interrupts with acknowledge, address errors (which also proves the Moira config is in place), and disassembly.
@@ -229,6 +241,7 @@ There are 99 tests, using a small built-in framework ([`tests/test.hpp`](tests/t
 - [`sound_tests.cpp`](tests/sound_tests.cpp): PSG tone frequency, silence and noise. YM2612 440 Hz FM tone and key-off release, timers A and B (including timer B's free-running prescaler), DAC. Z80 running from RAM, the bank window, PSG writes, the VBlank interrupt, pausing while the 68000 holds the bus. Also a full-system test in which a Z80 program plays a DAC square wave into the frame's audio.
 - [`input_tests.cpp`](tests/input_tests.cpp): 3-button protocol, the full 6-button sequence and its timeout, TH as input, nothing connected, routing from `Emulator::set_controller`. Also a full-system test in which a 68000 program reads the pad.
 - [`rom_loader_tests.cpp`](tests/rom_loader_tests.cpp): ZIP archives built in memory by the test. Covers stored and deflate entries, which entry is chosen, CRC checking, and corrupt, encrypted, truncated and empty archives; also files on disk, raw and zipped, plus bad names and sizes.
+- [`frontend_input_tests.cpp`](tests/frontend_input_tests.cpp) (in `frontend_tests`): the gamepad-to-Mega-Drive mapping, stick dead zone, opposite directions cancelling, and merging keyboard and gamepad input. Also the real SDL path, using SDL3 **virtual gamepads**: hot-plugging, player assignment, buttons and stick, disconnecting and reconnecting. Real devices are hidden during the tests, so they don't depend on what's plugged in.
 - [`emulator_tests.cpp`](tests/emulator_tests.cpp): refresh rates, frame stepping, region setup.
 
 ## Roadmap

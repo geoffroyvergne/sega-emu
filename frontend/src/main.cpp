@@ -17,6 +17,8 @@
 #include "md/emulator.hpp"
 #include "md/rom_loader.hpp"
 
+#include "input.hpp"
+
 namespace {
 
 constexpr int kWindowScale = 3;
@@ -34,7 +36,7 @@ using TexturePtr  = std::unique_ptr<SDL_Texture,  SdlDeleter>;
 using AudioPtr    = std::unique_ptr<SDL_AudioStream, SdlDeleter>;
 
 struct SdlSession {
-    bool ok = SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
+    bool ok = SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD);
     ~SdlSession() { SDL_Quit(); }
 };
 
@@ -109,27 +111,6 @@ bool write_wav(const char* path, const std::vector<md::s16>& samples, int sample
     out.write("data", 4); put32(data_bytes);
     out.write(reinterpret_cast<const char*>(samples.data()), data_bytes);
     return static_cast<bool>(out);
-}
-
-// Keyboard -> Mega Drive pad mapping. Lives in the frontend, not the core.
-md::ControllerState read_keyboard() {
-    const bool* keys = SDL_GetKeyboardState(nullptr);
-    md::ControllerState pad;
-    pad.set(md::Button::Up,    keys[SDL_SCANCODE_UP]);
-    pad.set(md::Button::Down,  keys[SDL_SCANCODE_DOWN]);
-    pad.set(md::Button::Left,  keys[SDL_SCANCODE_LEFT]);
-    pad.set(md::Button::Right, keys[SDL_SCANCODE_RIGHT]);
-    pad.set(md::Button::A,     keys[SDL_SCANCODE_A]);
-    pad.set(md::Button::B,     keys[SDL_SCANCODE_S]);
-    pad.set(md::Button::C,     keys[SDL_SCANCODE_D]);
-    pad.set(md::Button::X,     keys[SDL_SCANCODE_Q]);
-    pad.set(md::Button::Y,     keys[SDL_SCANCODE_W]);
-    pad.set(md::Button::Z,     keys[SDL_SCANCODE_E]);
-    // Alt+Enter toggles fullscreen, so it must not also press Start.
-    const bool alt = (SDL_GetModState() & SDL_KMOD_ALT) != 0;
-    pad.set(md::Button::Start, keys[SDL_SCANCODE_RETURN] && !alt);
-    pad.set(md::Button::Mode,  keys[SDL_SCANCODE_RSHIFT]);
-    return pad;
 }
 
 // Writes the active area of the framebuffer as a binary PPM (P6).
@@ -335,6 +316,7 @@ int main(int argc, char* argv[]) {
 #endif
 
     AudioOutput audio{emu.audio_sample_rate()};
+    frontend::InputManager input;  // gamepads already plugged in arrive as ADDED events
 
     // Fixed timestep: one emulated frame per tick (~59.92 Hz NTSC, ~49.70 Hz PAL).
     using Clock = std::chrono::steady_clock;
@@ -354,6 +336,9 @@ int main(int argc, char* argv[]) {
         // --- Events ---------------------------------------------------------
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+            if (const auto message = input.handle_event(event); !message.empty()) {
+                std::printf("%s\n", message.c_str());
+            }
             switch (event.type) {
             case SDL_EVENT_QUIT:
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
@@ -389,7 +374,9 @@ int main(int argc, char* argv[]) {
         if (!running) break;
 
         // --- Emulate one frame ----------------------------------------------
-        emu.set_controller(0, read_keyboard());
+        for (int player = 0; player < frontend::InputManager::kPlayers; ++player) {
+            emu.set_controller(player, input.state(player));
+        }
         emu.run_frame();
         audio.push(emu.audio_samples());
 

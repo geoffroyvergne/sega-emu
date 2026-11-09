@@ -22,3 +22,14 @@ if(ZLIB_FOUND)
 endif()
 
 add_test(NAME core_tests COMMAND core_tests)
+
+# Frontend input tests (need SDL3, so only when the frontend is built).
+# Uses SDL's virtual gamepads: no physical device needed.
+if(MD_BUILD_FRONTEND)
+    add_executable(frontend_tests
+        test_main.cpp
+        frontend_input_tests.cpp
+    )
+    target_link_libraries(frontend_tests PRIVATE md_frontend_input md::warnings)
+    add_test(NAME frontend_tests COMMAND frontend_tests)
+endif()
