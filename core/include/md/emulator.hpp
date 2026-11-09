@@ -2,11 +2,14 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <span>
 
+#include "md/clock.hpp"
 #include "md/framebuffer.hpp"
 #include "md/input.hpp"
 #include "md/m68k.hpp"
+#include "md/megacd/megacd.hpp"
 #include "md/memory.hpp"
 #include "md/sound.hpp"
 #include "md/vdp.hpp"
@@ -21,7 +24,10 @@ class Emulator {
 public:
     static constexpr int kNumPorts = 2;
 
-    explicit Emulator(Region region = Region::NTSC);
+    // region: video standard (NTSC 60 Hz / PAL 50 Hz). overseas: false for a
+    // Japanese console. Both are reported to software by the version register;
+    // region-locked software (e.g. a Mega-CD BIOS) refuses the wrong one.
+    explicit Emulator(Region region = Region::NTSC, bool overseas = true);
 
     // Components hold references to each other.
     Emulator(const Emulator&) = delete;
@@ -39,6 +45,21 @@ public:
     // Pad type on both ports (6-button by default; a few old games misread
     // 6-button pads and need 3-button).
     void set_pad_type(Gamepad::Type type) noexcept;
+
+    // --- Mega-CD --------------------------------------------------------------
+    // While a Mega-CD is attached, the scheduler runs the main and sub CPUs
+    // in lockstep slices of at most this many main-CPU cycles. The sub CPU
+    // gets the proportional share (12.5 MHz vs ~7.67 MHz: ~1.63x).
+    static constexpr int kMegaCdSliceMainCycles = 32;
+
+    // Plugs a Mega-CD into the expansion port, with its BIOS. cd_boot: no
+    // cartridge, the console boots the BIOS at 0x000000 (otherwise the
+    // Mega-CD appears at 0x400000 and the cartridge boots). Resets the machine.
+    megacd::MegaCd& attach_mega_cd(std::span<const u8> bios, bool cd_boot);
+    [[nodiscard]] megacd::MegaCd* mega_cd() noexcept { return mega_cd_.get(); }
+
+    // Sub-CPU cycles per main-CPU cycle (1.6296 NTSC, 1.6446 PAL).
+    [[nodiscard]] double sub_cpu_ratio() const noexcept;
 
     [[nodiscard]] const Framebuffer& framebuffer() const noexcept { return framebuffer_; }
 
@@ -63,11 +84,17 @@ public:
 
 private:
     // Which CPU is executing, so chip accesses can be timestamped.
-    enum class Active { None, M68k, Z80 };
+    enum class Active { None, M68k, Z80, SubCpu };
 
     void render_test_pattern();
     void run_z80_until(s64 master_target);
     [[nodiscard]] s64 current_master_time() const noexcept;
+    [[nodiscard]] s64 master_clock_hz() const noexcept;
+
+    // The main 68000's IPL pins are shared: the VDP (levels 4, 6) and the
+    // expansion port (Mega-CD) can both request an interrupt. The CPU sees
+    // the highest pending level, updated the moment any source changes.
+    void update_main_irq();
 
     // Declaration order matters: later members reference earlier ones.
     Region      region_;
@@ -77,6 +104,12 @@ private:
     Sound       sound_;
     M68k        cpu_{memory_};
     Z80         z80_{memory_};
+
+    std::unique_ptr<megacd::MegaCd> mega_cd_;
+    bool cd_boot_ = false;
+    ClockConverter sub_clock_{12'500'000, static_cast<u64>(master_clock_hz())};
+    int vdp_irq_level_ = 0;
+    int expansion_irq_level_ = 0;
 
     s64 master_clock_     = 0;  // master cycles since the last reset (end of last slice)
     s64 cpu_cycle_origin_ = 0;  // 68000 cycle count at the last reset

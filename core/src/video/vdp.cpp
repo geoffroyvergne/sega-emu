@@ -216,7 +216,12 @@ void Vdp::run_dma_transfer() {
     const u32 source_high = u32{static_cast<u32>(regs_[23] & 0x7F)} << 17;
     u32 source_low = regs_[21] | (u32{regs_[22]} << 8);
 
-    for (u32 n = dma_length(); n > 0; --n) {
+    u32 n = dma_length();
+    if (dma_delayed_ && dma_delayed_(source_high | (source_low << 1))) {
+        address_ = static_cast<u16>(address_ + auto_increment());
+        --n;
+    }
+    for (; n > 0; --n) {
         const u32 source = source_high | (source_low << 1);
         write_target(dma_read_ ? dma_read_(source) : 0);
         source_low = (source_low + 1) & 0xFFFF;

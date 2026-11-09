@@ -12,10 +12,17 @@ add_executable(core_tests
     sound_tests.cpp
     input_tests.cpp
     rom_loader_tests.cpp
+    megacd_tests.cpp
+    megacd_scheduler_tests.cpp
+    megacd_cd_tests.cpp
+    megacd_graphics_tests.cpp
+    megacd_sound_tests.cpp
 )
 target_link_libraries(core_tests PRIVATE md::core md::warnings)
 
-# The ZIP tests build deflate-compressed archives with zlib.
+# The ZIP tests build deflate-compressed archives with zlib. (find_package
+# results are directory-scoped, so look it up here too.)
+find_package(ZLIB)
 if(ZLIB_FOUND)
     target_link_libraries(core_tests PRIVATE ZLIB::ZLIB)
     target_compile_definitions(core_tests PRIVATE MD_HAVE_ZLIB=1)

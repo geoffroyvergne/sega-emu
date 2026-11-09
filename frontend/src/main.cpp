@@ -11,11 +11,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <future>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "md/emulator.hpp"
 #include "md/rom_loader.hpp"
+#include "md/zip_archive.hpp"
 
 #include "input.hpp"
 
@@ -192,7 +195,12 @@ void apply_presentation(SDL_Window* window, SDL_Renderer* renderer,
 
 void print_usage() {
     std::fprintf(stderr,
-        "usage: megadrive [--fullscreen] [--3button] [rom.bin]\n"
+        "usage: megadrive [--fullscreen] [--3button] [--region pal|ntsc|jp] [--bios megacd_bios.bin] [rom.bin]\n"
+        "         --region: console region (default: read from the cartridge or BIOS header)\n"
+        "         --pcm-lowpass <Hz>: Mega-CD PCM output filter cutoff (default 7000, 0 = off)\n"
+        "         --bios: attach a Mega-CD with this BIOS; without a ROM, boot it (CD boot)\n"
+        "         --disc: insert a CD image (.cue, .iso or raw .bin) into the Mega-CD;\n"
+        "                 to change discs while playing, drop the next one on the window\n"
         "       megadrive --frames <n> [--screenshot <out.ppm>] [--wav <out.wav>] <rom.bin>\n"
         "         headless: runs <n> frames without a window, then saves the last\n"
         "         frame and/or all the audio produced\n");
@@ -213,6 +221,10 @@ int main(int argc, char* argv[]) {
     long headless_frames = 0;
     bool start_fullscreen = false;
     bool three_button = false;
+    double pcm_lowpass = md::megacd::Pcm::kDefaultLowpassHz;
+    const char* bios_path = nullptr;
+    const char* disc_path = nullptr;
+    const char* region_arg = nullptr;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
@@ -221,6 +233,14 @@ int main(int argc, char* argv[]) {
             screenshot_path = argv[++i];
         } else if (std::strcmp(argv[i], "--wav") == 0 && i + 1 < argc) {
             wav_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--disc") == 0 && i + 1 < argc) {
+            disc_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--bios") == 0 && i + 1 < argc) {
+            bios_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--region") == 0 && i + 1 < argc) {
+            region_arg = argv[++i];
+        } else if (std::strcmp(argv[i], "--pcm-lowpass") == 0 && i + 1 < argc) {
+            pcm_lowpass = std::atof(argv[++i]);
         } else if (std::strcmp(argv[i], "--3button") == 0) {
             three_button = true;
         } else if (std::strcmp(argv[i], "--fullscreen") == 0) {
@@ -233,21 +253,77 @@ int main(int argc, char* argv[]) {
         }
     }
     const bool headless = headless_frames > 0 || screenshot_path || wav_path;
-    if (headless && (!rom_path || headless_frames <= 0)) {
+    if (headless && ((!rom_path && !bios_path) || headless_frames <= 0)) {
         print_usage();
         return 1;
     }
 
-    md::Emulator emu{md::Region::NTSC};
-    if (three_button) emu.set_pad_type(md::Gamepad::Type::ThreeButton);
-
+    // --- Load files (before creating the console: they decide its region) ---
+    md::RomImage rom;
     if (rom_path) {
-        // Raw image or ZIP archive (detected by content).
-        const md::RomImage rom = md::load_rom_file(rom_path);
+        rom = md::load_rom_file(rom_path);  // raw image or ZIP archive
         if (!rom.ok()) {
             std::fprintf(stderr, "Cannot load ROM: %s\n", rom.error.c_str());
             return 1;
         }
+    }
+    md::RomImage bios;
+    if (bios_path) {
+        bios = md::load_rom_file(bios_path);
+        if (!bios.ok()) {
+            std::fprintf(stderr, "Cannot load Mega-CD BIOS: %s\n", bios.error.c_str());
+            return 1;
+        }
+    }
+
+    // Region: --region, else the header of what boots (cartridge, or the
+    // Mega-CD BIOS when booting a CD), else NTSC overseas.
+    md::ConsoleRegion region;
+    const char* region_source = "default";
+    if (region_arg) {
+        const std::string r = region_arg;
+        if (r == "pal" || r == "eu")       region = {md::Region::PAL, true};
+        else if (r == "ntsc" || r == "us") region = {md::Region::NTSC, true};
+        else if (r == "jp")                region = {md::Region::NTSC, false};
+        else { print_usage(); return 1; }
+        region_source = "--region";
+    } else if (const auto& boot = rom_path ? rom : bios; !boot.data.empty()) {
+        if (const auto detected = md::detect_region(boot.data)) {
+            region = *detected;
+            region_source = rom_path ? "cartridge header" : "BIOS header";
+        }
+    }
+    std::printf("Console: %s %s (%s)\n", region.video == md::Region::PAL ? "PAL 50 Hz" : "NTSC 60 Hz",
+                region.overseas ? "overseas" : "Japan", region_source);
+
+    md::Emulator emu{region.video, region.overseas};
+    if (three_button) emu.set_pad_type(md::Gamepad::Type::ThreeButton);
+
+    if (bios_path) {
+        const bool cd_boot = rom_path == nullptr;
+        emu.attach_mega_cd(bios.data, cd_boot).pcm().set_lowpass(pcm_lowpass);
+        std::printf("Mega-CD attached (%s boot), BIOS %s\n", cd_boot ? "CD" : "cartridge", bios.name.c_str());
+    }
+    if (disc_path) {
+        if (!emu.mega_cd()) {
+            std::fprintf(stderr, "--disc needs a Mega-CD: add --bios <file>\n");
+            return 1;
+        }
+        std::string error;
+        if (md::file_is_zip(disc_path)) {
+            std::printf("Unpacking disc archive into %s (first run only)...\n",
+                        md::megacd::Disc::default_cache_dir().c_str());
+        }
+        auto disc = md::megacd::Disc::open(disc_path, error);
+        if (!disc) {
+            std::fprintf(stderr, "Cannot load disc: %s\n", error.c_str());
+            return 1;
+        }
+        std::printf("Disc %s: %zu track(s), %u sectors\n", disc_path, disc->tracks().size(), disc->sector_count());
+        emu.mega_cd()->insert_disc(std::move(disc));
+    }
+
+    if (rom_path) {
         emu.load_rom(rom.data);
         const auto regs = emu.cpu().registers();
         std::printf("Loaded %s (%zu bytes): SSP=%06X PC=%06X  %s\n", rom.name.c_str(), rom.data.size(),
@@ -266,7 +342,12 @@ int main(int argc, char* argv[]) {
             }
         }
         const auto regs = emu.cpu().registers();
-        std::printf("Ran %ld frames, PC=%06X\n", headless_frames, regs.pc);
+        std::printf("Ran %ld frames, PC=%06X  %s\n", headless_frames, regs.pc,
+                    emu.cpu().disassemble(regs.pc).c_str());
+        if (auto* cd = emu.mega_cd()) {
+            const auto sub = cd->sub_cpu().registers();
+            std::printf("Sub CPU PC=%06X  %s\n", sub.pc, cd->sub_cpu().disassemble(sub.pc).c_str());
+        }
 
         if (screenshot_path) {
             if (!write_ppm(fb, screenshot_path)) {
@@ -332,6 +413,33 @@ int main(int argc, char* argv[]) {
     auto next_frame = Clock::now();
     bool running = true;
 
+    // Disc changes by drag and drop (multi-disc games). Opening a disc may
+    // unpack a ZIP (seconds), so it runs on a worker thread while the game
+    // keeps going; the swap happens when it's ready.
+    struct LoadedDisc {
+        std::shared_ptr<md::megacd::Disc> disc;
+        std::string path;
+        std::string error;
+    };
+    std::future<LoadedDisc> disc_loading;
+    const auto on_drop = [&](const char* path) {
+        if (!emu.mega_cd()) {
+            std::printf("Dropped %s: disc changes need a Mega-CD (start with --bios)\n", path);
+            return;
+        }
+        if (disc_loading.valid()) {
+            std::printf("Dropped %s: still loading the previous disc, try again in a moment\n", path);
+            return;
+        }
+        std::printf("Loading disc %s%s...\n", path, md::file_is_zip(path) ? " (unpacking, first time only)" : "");
+        disc_loading = std::async(std::launch::async, [p = std::string(path)] {
+            LoadedDisc loaded;
+            loaded.path = p;
+            loaded.disc = md::megacd::Disc::open(p, loaded.error);
+            return loaded;
+        });
+    };
+
     while (running) {
         // --- Events ---------------------------------------------------------
         SDL_Event event;
@@ -360,6 +468,9 @@ int main(int argc, char* argv[]) {
                     else            running = false;
                 }
                 break;
+            case SDL_EVENT_DROP_FILE:
+                if (event.drop.data) on_drop(event.drop.data);
+                break;
             case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
             case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
                 fullscreen = event.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN;
@@ -372,6 +483,18 @@ int main(int argc, char* argv[]) {
             }
         }
         if (!running) break;
+
+        if (disc_loading.valid() &&
+            disc_loading.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            LoadedDisc loaded = disc_loading.get();
+            if (loaded.disc) {
+                std::printf("Disc changed: %s (%zu track(s), %u sectors). Tray open, closing in 1 s.\n",
+                            loaded.path.c_str(), loaded.disc->tracks().size(), loaded.disc->sector_count());
+                emu.mega_cd()->swap_disc(std::move(loaded.disc));
+            } else {
+                std::printf("Cannot load disc %s: %s\n", loaded.path.c_str(), loaded.error.c_str());
+            }
+        }
 
         // --- Emulate one frame ----------------------------------------------
         for (int player = 0; player < frontend::InputManager::kPlayers; ++player) {

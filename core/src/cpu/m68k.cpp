@@ -6,11 +6,11 @@ namespace md {
 
 class M68k::Impl {
 public:
-    explicit Impl(Memory& memory) : cpu(memory) {}
+    explicit Impl(Bus68k& bus) : cpu(bus) {}
     MoiraBridge cpu;
 };
 
-M68k::M68k(Memory& memory) : impl_(std::make_unique<Impl>(memory)) {}
+M68k::M68k(Bus68k& bus) : impl_(std::make_unique<Impl>(bus)) {}
 
 M68k::~M68k() = default;
 

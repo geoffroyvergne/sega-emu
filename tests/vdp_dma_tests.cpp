@@ -26,6 +26,10 @@ struct DmaFixture : Fixture {
         set_reg(vdp, 20, static_cast<u8>(length >> 8));
     }
 
+    void vram_fill_marker() {
+        write_words(vdp, kVramWrite, 0x1000, {0x5A5A, 0x5A5A, 0x5A5A, 0x5A5A, 0x5A5A, 0x5A5A, 0x5A5A, 0x5A5A});
+    }
+
     // 68000 -> VDP transfer from a byte address.
     void set_source(u32 address) {
         const u32 words = address >> 1;
@@ -133,4 +137,27 @@ TEST(dma_vram_copy) {
     CHECK(f.vdp.vram()[0x4003] == 0x44);
     CHECK(f.vdp.reg(21) == 0x04 && f.vdp.reg(22) == 0x30);
     CHECK(f.reads.empty());
+}
+
+TEST(dma_from_delayed_source_lands_one_word_late) {
+    // Mega-CD Word RAM: the VDP gets each word one transfer late, so the
+    // first destination word is skipped and one word fewer is read.
+    DmaFixture f;
+    f.vdp.set_dma_delay_predicate([](u32 address) { return (address & 0xE00000) == 0x200000; });
+    f.vram_fill_marker();
+    f.set_length(4);
+    f.set_source(0x200002);                       // games add 2 to compensate
+    command(f.vdp, make_command(kVramWrite | kDma, 0x1000));
+
+    CHECK(f.reads == (std::vector<u32>{0x200002, 0x200004, 0x200006}));
+    CHECK(f.vdp.vram()[0x1000] == 0x5A && f.vdp.vram()[0x1001] == 0x5A);  // untouched
+    CHECK(f.vdp.vram()[0x1002] == 0xA0 && f.vdp.vram()[0x1003] == 0x01);  // word read from 0x200002
+    CHECK(f.vdp.address() == 0x1008);
+
+    // Other sources are unaffected.
+    f.reads.clear();
+    f.set_length(2);
+    f.set_source(0xFF0000);
+    command(f.vdp, make_command(kVramWrite | kDma, 0x2000));
+    CHECK(f.reads.size() == 2);
 }

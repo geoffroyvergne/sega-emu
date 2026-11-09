@@ -5,11 +5,11 @@
 #include <Moira.h>
 
 #include "md/m68k.hpp"
-#include "md/memory.hpp"
+#include "md/bus.hpp"
 
 namespace md {
 
-// Glue between Moira's bus callbacks and our Memory class.
+// Glue between Moira's bus callbacks and a 68000 bus (Memory, or the Mega-CD sub bus).
 //
 // Moira calls these hooks for every bus cycle. With the 68000 model and the
 // default 16-bit DSACK, Moira splits long accesses into two 16-bit cycles in
@@ -21,7 +21,7 @@ namespace md {
 // (stateful) bus accesses are still allowed.
 class MoiraBridge final : public moira::Moira {
 public:
-    explicit MoiraBridge(Memory& memory) : memory_(memory) {
+    explicit MoiraBridge(Bus68k& memory) : memory_(memory) {
         setModel(moira::Model::M68000);
         irqMode = moira::IrqMode::AUTO;  // Mega Drive peripherals use autovectors
     }
@@ -52,7 +52,7 @@ private:
     // bus arbiter ignores the locked RMW). Some games (e.g. Gargoyles) rely on
     // this. Hook willExecute(..., Instr::TAS, ...) once a game needs it.
 
-    Memory& memory_;
+    Bus68k& memory_;
 };
 
 } // namespace md

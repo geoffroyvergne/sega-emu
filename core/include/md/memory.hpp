@@ -4,6 +4,7 @@
 #include <span>
 #include <vector>
 
+#include "md/bus.hpp"
 #include "md/gamepad.hpp"
 #include "md/types.hpp"
 
@@ -32,11 +33,13 @@ public:
 // The 68000's view of the Mega Drive address space (24-bit, 16 MB).
 //
 //   0x000000-0x3FFFFF  Cartridge ROM (up to 4 MB)
-//   0x400000-0x9FFFFF  Expansion (Sega CD / 32X) — unmapped, open bus
+//   0x400000-0x7FFFFF  Expansion (Mega-CD) — forwarded to attach_expansion()
+//   0x800000-0x9FFFFF  32X — unmapped, open bus
 //   0xA00000-0xA0FFFF  Z80 address space (8 KB RAM, YM2612) — needs Z80 bus
 //   0xA10000-0xA1001F  I/O: version register, controller ports, serial
 //   0xA11100           Z80 bus request
 //   0xA11200           Z80 reset
+//   0xA12000-0xA120FF  Mega-CD gate array registers (expansion device)
 //   0xC00000-0xC0001F  VDP ports + PSG (mirrored up to 0xDFFFFF)
 //   0xE00000-0xFFFFFF  64 KB main RAM, mirrored every 64 KB (canonical 0xFF0000)
 //
@@ -46,7 +49,7 @@ public:
 //
 // Alignment: word/long accesses to odd addresses trigger an address error on
 // the 68000. The CPU core must raise that exception before calling into Memory.
-class Memory {
+class Memory final : public Bus68k {
 public:
     static constexpr u32 kAddressMask = 0xFF'FFFF;
     static constexpr u32 kRomMaxSize  = 0x40'0000;
@@ -68,17 +71,17 @@ public:
     void reset();
 
     // Reads may have side effects (e.g. reading the VDP control port), so they are non-const.
-    [[nodiscard]] u8  read_byte(u32 address);
-    [[nodiscard]] u16 read_word(u32 address);
-    [[nodiscard]] u32 read_long(u32 address);
+    [[nodiscard]] u8  read_byte(u32 address) override;
+    [[nodiscard]] u16 read_word(u32 address) override;
+    [[nodiscard]] u32 read_long(u32 address) override;
 
     // Side-effect-free read for debuggers/disassemblers: ROM and RAM only,
     // everything else returns open bus without touching any device.
-    [[nodiscard]] u16 peek_word(u32 address) const noexcept;
+    [[nodiscard]] u16 peek_word(u32 address) const noexcept override;
 
-    void write_byte(u32 address, u8  value);
-    void write_word(u32 address, u16 value);
-    void write_long(u32 address, u32 value);
+    void write_byte(u32 address, u8  value) override;
+    void write_word(u32 address, u16 value) override;
+    void write_long(u32 address, u32 value) override;
 
     void attach_vdp(WordDevice* vdp) noexcept    { vdp_ = vdp; }
     void attach_ym2612(ByteDevice* ym) noexcept  { ym2612_ = ym; }
@@ -86,6 +89,15 @@ public:
 
     // Controller ports: 0 = port A (0xA10003), 1 = port B (0xA10005),
     // 2 = expansion (0xA10007). nullptr = nothing plugged in.
+    // Expansion connector (Mega-CD): receives accesses to 0x400000-0x7FFFFF
+    // and to its registers at 0xA12000-0xA120FF. With cd_boot, the console
+    // has no cartridge and boots from the expansion: 0x000000-0x3FFFFF is
+    // routed to the device instead of the cartridge ROM.
+    void attach_expansion(BusDevice* device, bool cd_boot = false) noexcept {
+        expansion_ = device;
+        cd_boot_ = cd_boot;
+    }
+
     void attach_pad(int port, Gamepad* pad) noexcept {
         if (port >= 0 && port < 3) pads_[static_cast<std::size_t>(port)] = pad;
     }
@@ -122,6 +134,14 @@ public:
 private:
     [[nodiscard]] u8   rom_byte(u32 address) const noexcept;
 
+    // Addresses claimed by the expansion device (Mega-CD), if one is attached.
+    [[nodiscard]] bool is_expansion(u32 address) const noexcept {
+        if (!expansion_) return false;
+        if ((address & 0xFF'FF00) == 0xA1'2000) return true;               // gate array
+        if (address >= 0x40'0000 && address < 0x80'0000) return true;      // expansion area
+        return cd_boot_ && address < 0x40'0000;                           // CD boot: no cartridge
+    }
+
     [[nodiscard]] u8   z80_area_read(u32 address);
     void               z80_area_write(u32 address, u8 value);
 
@@ -153,6 +173,8 @@ private:
     ByteDevice* ym2612_ = nullptr;
     ByteDevice* psg_    = nullptr;
     std::array<Gamepad*, 3> pads_{};
+    BusDevice* expansion_ = nullptr;
+    bool cd_boot_ = false;
 };
 
 } // namespace md

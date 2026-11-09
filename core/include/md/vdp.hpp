@@ -83,6 +83,12 @@ public:
     void set_irq_callback(IrqCallback callback) { irq_callback_ = std::move(callback); }
 
     void set_dma_read_callback(DmaReadCallback callback) { dma_read_ = std::move(callback); }
+    // True for 68000 addresses whose data reaches the VDP one word late in a
+    // DMA (the Mega-CD's Word RAM): the first destination word is skipped
+    // and the transfer is one word shorter, so games set the source 2 bytes
+    // ahead to compensate (as modelled by Genesis Plus GX).
+    using DmaDelayPredicate = std::function<bool(u32 address)>;
+    void set_dma_delay_predicate(DmaDelayPredicate predicate) { dma_delayed_ = std::move(predicate); }
 
     // The VDP also drives the Z80's /INT line: asserted at the start of
     // VBlank, released one line later.
@@ -175,6 +181,7 @@ private:
     bool write_pending_ = false;  // first half of a 2-word command received
     bool dma_fill_pending_ = false;  // fill armed; starts on the next data port write
     DmaReadCallback dma_read_;
+    DmaDelayPredicate dma_delayed_;
 
     // Interrupt state.
     bool vint_pending_  = false;

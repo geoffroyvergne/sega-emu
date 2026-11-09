@@ -71,6 +71,7 @@ void Memory::reset() {
 u8 Memory::read_byte(u32 address) {
     address &= kAddressMask;
 
+    if (is_expansion(address))    return expansion_->read8(address);
     if (address < kRomEnd)        return rom_byte(address);
     if (address >= kRamAreaStart) return ram_[address & kRamMask];
     if (address >= kVdpAreaStart) return vdp_read_byte(address);
@@ -83,6 +84,7 @@ u8 Memory::read_byte(u32 address) {
 u16 Memory::read_word(u32 address) {
     address &= kAddressMask;
 
+    if (is_expansion(address)) return expansion_->read16(address);
     if (address < kRomEnd) {
         return make_word(rom_byte(address), rom_byte(address + 1));
     }
@@ -121,6 +123,7 @@ u16 Memory::peek_word(u32 address) const noexcept {
 void Memory::write_byte(u32 address, u8 value) {
     address &= kAddressMask;
 
+    if (is_expansion(address)) { expansion_->write8(address, value); return; }
     if (address < kRomEnd) return;  // ROM is read-only (SRAM/mappers: TODO)
     if (address >= kRamAreaStart) { ram_[address & kRamMask] = value; return; }
     if (address >= kVdpAreaStart) { vdp_write_byte(address, value); return; }
@@ -131,6 +134,7 @@ void Memory::write_byte(u32 address, u8 value) {
 void Memory::write_word(u32 address, u16 value) {
     address &= kAddressMask;
 
+    if (is_expansion(address)) { expansion_->write16(address, value); return; }
     if (address < kRomEnd) return;
     if (address >= kRamAreaStart) {
         ram_[address & kRamMask]       = hi_byte(value);

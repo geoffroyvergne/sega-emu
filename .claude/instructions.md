@@ -10,3 +10,6 @@
 2. **Explain the "Why":** When implementing hardware behavior (e.g., VDP status register flags, Sega CD bios memory mapping), explain the hardware quirk being addressed.
 3. **No Placeholders:** Do not emit code with `// TODO: implement later` in core logic unless explicitly asked. Fill the logic or stub it with a deterministic logging macro.
 4. **State Machine Integrity:** Always consider synchronization. The Mega Drive relies on the 68k and Z80 running in parallel, synchronized by scanlines/cycles.
+
+- **Dual-CPU Execution:** Emulate the Sub-CPU and Main-CPU using a fine-grained cycle interleaved loop or dynamic scheduling to prevent desynchronization during BIOS boot and hardware register polling.
+- **Memory Protection:** Implement strict access rules for Word RAM based on which CPU currently owns the bank (Main-CPU vs Sub-CPU). Return deterministic open-bus values on illegal reads.

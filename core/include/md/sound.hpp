@@ -34,6 +34,12 @@ public:
     // Returns the current emulated time in master cycles (provided by the scheduler).
     void set_time_source(TimeSource source) { time_source_ = std::move(source); }
 
+    // Extra audio from an expansion device (the Mega-CD's PCM and CD-DA):
+    // asked for its output at each sample's master time, in order, and mixed
+    // in before the output filter.
+    using ExpansionAudio = std::function<void(s64 master_time, s32& left, s32& right)>;
+    void set_expansion_audio(ExpansionAudio source) { expansion_ = std::move(source); }
+
     // Bus-facing adapters for Memory::attach_ym2612 / attach_psg.
     [[nodiscard]] ByteDevice& ym_device() noexcept  { return ym_port_; }
     [[nodiscard]] ByteDevice& psg_device() noexcept { return psg_port_; }
@@ -81,6 +87,7 @@ private:
     PsgPort psg_port_{*this};
 
     TimeSource time_source_;
+    ExpansionAudio expansion_;
     s64 next_sample_time_ = kMasterCyclesPerSample;  // end of the sample being built
     s64 psg_time_ = 0;                               // master time of the PSG's next tick
     std::vector<s16> buffer_;

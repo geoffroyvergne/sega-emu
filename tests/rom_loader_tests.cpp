@@ -5,106 +5,24 @@
 #include <string>
 #include <vector>
 
-#if MD_HAVE_ZLIB
-#include <zlib.h>
-#endif
-
 #include "md/rom_loader.hpp"
 #include "test.hpp"
+#include "zip_builder.hpp"
 
 using md::u16;
 using md::u32;
 using md::u8;
+using test::ZipBuilder;
 
 namespace {
 
-// Minimal ZIP writer for tests: stored (method 0) or deflate (method 8) entries.
-class ZipBuilder {
-public:
-    struct File {
-        std::string name;
-        std::vector<u8> data;
-        bool deflate = false;
-        bool encrypted = false;
-    };
-
-    ZipBuilder& add(File f) { files_.push_back(std::move(f)); return *this; }
-
-    [[nodiscard]] std::vector<u8> build() const {
-        std::vector<u8> out;
-        std::vector<u8> directory;
-        for (const auto& f : files_) {
-            const auto compressed = f.deflate ? deflate(f.data) : f.data;
-            const u32 crc = crc32_of(f.data);
-            const auto offset = static_cast<u32>(out.size());
-            const u16 method = f.deflate ? 8 : 0;
-            const u16 flags = f.encrypted ? 1 : 0;
-
-            put32(out, 0x04034B50); put16(out, 20); put16(out, flags); put16(out, method);
-            put16(out, 0); put16(out, 0);                       // time, date
-            put32(out, crc); put32(out, size32(compressed)); put32(out, size32(f.data));
-            put16(out, static_cast<u16>(f.name.size())); put16(out, 0);
-            out.insert(out.end(), f.name.begin(), f.name.end());
-            out.insert(out.end(), compressed.begin(), compressed.end());
-
-            put32(directory, 0x02014B50); put16(directory, 20); put16(directory, 20);
-            put16(directory, flags); put16(directory, method); put16(directory, 0); put16(directory, 0);
-            put32(directory, crc); put32(directory, size32(compressed)); put32(directory, size32(f.data));
-            put16(directory, static_cast<u16>(f.name.size())); put16(directory, 0); put16(directory, 0);
-            put16(directory, 0); put16(directory, 0); put32(directory, 0); put32(directory, offset);
-            directory.insert(directory.end(), f.name.begin(), f.name.end());
-        }
-        const auto dir_offset = static_cast<u32>(out.size());
-        out.insert(out.end(), directory.begin(), directory.end());
-        put32(out, 0x06054B50); put16(out, 0); put16(out, 0);
-        put16(out, static_cast<u16>(files_.size())); put16(out, static_cast<u16>(files_.size()));
-        put32(out, size32(directory)); put32(out, dir_offset); put16(out, 0);
-        return out;
-    }
-
-private:
-    static void put16(std::vector<u8>& v, u16 x) { v.push_back(u8(x)); v.push_back(u8(x >> 8)); }
-    static void put32(std::vector<u8>& v, u32 x) { put16(v, u16(x)); put16(v, u16(x >> 16)); }
-    static u32 size32(const std::vector<u8>& v) { return static_cast<u32>(v.size()); }
-
-    static u32 crc32_of(const std::vector<u8>& data) {
-#if MD_HAVE_ZLIB
-        return static_cast<u32>(crc32(0L, data.data(), static_cast<uInt>(data.size())));
-#else
-        u32 crc = 0xFFFFFFFF;  // bitwise CRC-32, same polynomial as zlib
-        for (u8 b : data) {
-            crc ^= b;
-            for (int k = 0; k < 8; ++k) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-        }
-        return ~crc;
-#endif
-    }
-
-    static std::vector<u8> deflate(const std::vector<u8>& data) {
-#if MD_HAVE_ZLIB
-        z_stream zs{};
-        deflateInit2(&zs, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY);
-        std::vector<u8> out(deflateBound(&zs, static_cast<uLong>(data.size())));
-        zs.next_in = const_cast<Bytef*>(data.data());
-        zs.avail_in = static_cast<uInt>(data.size());
-        zs.next_out = out.data();
-        zs.avail_out = static_cast<uInt>(out.size());
-        deflate(&zs, Z_FINISH);
-        out.resize(zs.total_out);
-        deflateEnd(&zs);
-        return out;
-#else
-        return data;
-#endif
-    }
-
-    std::vector<File> files_;
-};
 
 std::vector<u8> fake_rom(std::size_t size) {
     std::vector<u8> rom(size);
     for (std::size_t i = 0; i < size; ++i) rom[i] = static_cast<u8>((i * 7) ^ (i >> 8));
-    rom[0x100] = 'S'; rom[0x101] = 'E'; rom[0x102] = 'G'; rom[0x103] = 'A';
+    if (size >= 0x104) {  // cartridge header marker, when the image is large enough
+        rom[0x100] = 'S'; rom[0x101] = 'E'; rom[0x102] = 'G'; rom[0x103] = 'A';
+    }
     return rom;
 }
 
@@ -164,6 +82,17 @@ TEST(zip_falls_back_to_largest_file) {
     CHECK(r.name == "game.rom");
 }
 
+TEST(zip_with_cue_sheet_is_reported_as_cd_image) {
+    const auto zip = ZipBuilder{}
+        .add({"Game (Track 01).bin", fake_rom(0x1000)})
+        .add({"Game.cue", {'F', 'I', 'L', 'E'}})
+        .build();
+    const auto r = md::extract_rom_from_zip(zip);
+    CHECK(!r.ok());
+    CHECK(r.error.find("Mega-CD disc image") != std::string::npos);
+    CHECK(r.error.find("--disc") != std::string::npos);
+}
+
 TEST(zip_errors) {
     CHECK(!md::extract_rom_from_zip(std::vector<u8>{0x50, 0x4B, 3, 4, 0, 0}).ok());
     CHECK(!md::extract_rom_from_zip(ZipBuilder{}.build()).ok());          // empty archive
@@ -211,4 +140,28 @@ TEST(load_rom_file_raw_and_zip) {
     std::remove(zip_path.c_str());
     std::remove(fake_zip.c_str());
     std::remove(tiny.c_str());
+}
+
+TEST(detect_region_from_header) {
+    auto with_code = [](const char* code) {
+        std::vector<u8> rom(0x200, ' ');
+        for (std::size_t i = 0; code[i] && i < 3; ++i) rom[0x1F0 + i] = static_cast<u8>(code[i]);
+        return md::detect_region(rom);
+    };
+    const auto eu = with_code("E");
+    CHECK(eu && eu->video == md::Region::PAL && eu->overseas);
+    const auto us = with_code("U");
+    CHECK(us && us->video == md::Region::NTSC && us->overseas);
+    const auto jp = with_code("J");
+    CHECK(jp && jp->video == md::Region::NTSC && !jp->overseas);
+    const auto world = with_code("JUE");                 // multi-region: USA preferred
+    CHECK(world && world->video == md::Region::NTSC && world->overseas);
+    const auto eu_jp = with_code("JE");                  // Japan before Europe
+    CHECK(eu_jp && !eu_jp->overseas);
+    const auto hex_eu = with_code("8");                  // new style: bit 3 = Europe
+    CHECK(hex_eu && hex_eu->video == md::Region::PAL);
+    const auto hex_all = with_code("F");
+    CHECK(hex_all && hex_all->video == md::Region::NTSC && hex_all->overseas);
+    CHECK(!with_code("   "));
+    CHECK(!md::detect_region(std::vector<u8>(0x100, 0)));  // too small for a header
 }

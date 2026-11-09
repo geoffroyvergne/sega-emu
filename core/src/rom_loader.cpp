@@ -125,6 +125,18 @@ RomImage extract_rom_from_zip(std::span<const u8> zip) {
     const auto entries = read_central_directory(zip, error);
     if (!entries) return failure(error);
 
+    // A cue sheet means a CD image (Mega-CD game), not a cartridge ROM.
+    for (const auto& e : *entries) {
+        const auto dot = e.name.find_last_of('.');
+        std::string ext = dot == std::string::npos ? "" : e.name.substr(dot + 1);
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (ext == "cue") {
+            return failure("this archive is a Mega-CD disc image (" + e.name +
+                           "), not a cartridge ROM. Unzip it and use --bios <megacd_bios> --disc <file.cue>");
+        }
+    }
+
     const Entry* entry = choose_rom_entry(*entries);
     if (!entry) return failure("ZIP archive contains no files");
 
@@ -187,6 +199,32 @@ RomImage extract_rom_from_zip(std::span<const u8> zip) {
     if (crc != entry->crc) return failure("CRC mismatch in " + entry->name + " (corrupt archive?)");
 #endif
     return rom;
+}
+
+std::optional<ConsoleRegion> detect_region(std::span<const u8> rom) {
+    if (rom.size() < 0x1F3) return std::nullopt;
+    bool jp = false, us = false, eu = false;
+    for (std::size_t i = 0x1F0; i < 0x1F3; ++i) {
+        const char c = static_cast<char>(std::toupper(rom[i]));
+        if (c == 'J') jp = true;
+        else if (c == 'U') us = true;
+        else if (c == 'E') eu = true;  // a lone "E" is read as the letter code (Europe)
+    }
+    if (!jp && !us && !eu) {
+        // New style: one hex digit, bit 0 = Japan, bit 2 = USA, bit 3 = Europe.
+        const char c = static_cast<char>(std::toupper(rom[0x1F0]));
+        int v = -1;
+        if (c >= '0' && c <= '9') v = c - '0';
+        else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+        if (v < 0) return std::nullopt;
+        jp = v & 1;
+        us = v & 4;
+        eu = v & 8;
+    }
+    if (us) return ConsoleRegion{Region::NTSC, true};
+    if (jp) return ConsoleRegion{Region::NTSC, false};
+    if (eu) return ConsoleRegion{Region::PAL, true};
+    return std::nullopt;
 }
 
 RomImage load_rom_file(const std::string& path) {

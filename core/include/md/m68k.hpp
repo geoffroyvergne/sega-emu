@@ -9,7 +9,7 @@
 
 namespace md {
 
-class Memory;
+class Bus68k;
 
 // Motorola 68000 main CPU (7.67 MHz NTSC / 7.60 MHz PAL = master clock / 7).
 //
@@ -31,7 +31,8 @@ public:
     // The VDP uses this to clear its pending VINT/HINT flag.
     using InterruptAckHandler = std::function<void(int level)>;
 
-    explicit M68k(Memory& memory);
+    // Works on any 68000 bus: the main CPU uses Memory, the Mega-CD sub CPU its own bus.
+    explicit M68k(Bus68k& bus);
     ~M68k();
 
     M68k(const M68k&) = delete;

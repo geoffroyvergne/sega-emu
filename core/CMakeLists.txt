@@ -86,6 +86,14 @@ add_library(md_core STATIC
     src/audio/sound.cpp
     src/io/gamepad.cpp
     src/rom_loader.cpp
+    src/zip_archive.cpp
+    src/megacd/registers.cpp
+    src/megacd/megacd.cpp
+    src/megacd/cdc.cpp
+    src/megacd/cd_drive.cpp
+    src/megacd/pcm.cpp
+    src/megacd/disc.cpp
+    src/megacd/graphics_asic.cpp
 )
 add_library(md::core ALIAS md_core)
 

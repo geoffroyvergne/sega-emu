@@ -41,3 +41,10 @@ TEST(emulator_version_register_matches_region) {
     CHECK(ntsc.memory().read_byte(0xA10001) == 0xA0);
     CHECK(pal.memory().read_byte(0xA10001)  == 0xE0);
 }
+
+TEST(emulator_version_register_japan) {
+    md::Emulator jp{md::Region::NTSC, false};
+    CHECK(jp.memory().read_byte(0xA10001) == 0x20);      // domestic, NTSC
+    md::Emulator pal{md::Region::PAL, true};
+    CHECK(pal.memory().read_byte(0xA10001) == 0xE0);     // overseas, PAL
+}

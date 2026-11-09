@@ -61,6 +61,12 @@ void Sound::sync(s64 master_time) {
         ym_.generate(left, right);
         left += psg;
         right += psg;
+        if (expansion_) {
+            s32 el = 0, er = 0;
+            expansion_(next_sample_time_, el, er);
+            left += el;
+            right += er;
+        }
         if (!dc_primed_) {
             // Start the filter at the current level, so playback doesn't
             // begin with a thump while the offset decays.
