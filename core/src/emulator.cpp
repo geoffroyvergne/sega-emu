@@ -61,6 +61,7 @@ Emulator::Emulator(Region region, bool overseas) : region_(region) {
 
 void Emulator::load_rom(std::span<const u8> image) {
     memory_.load_rom(image);
+    if (sega32x_) sega32x_->set_cartridge(memory_.rom());
     reset();
 }
 
@@ -72,6 +73,10 @@ void Emulator::reset() {
     z80_held_in_reset_ = true;
     z80_time_ = 0;
     if (mega_cd_) mega_cd_->reset();
+    if (sega32x_) sega32x_->reset();
+    sh2_clock_.reset();
+    vblank_ = false;
+    hblank_ = false;
     sub_clock_.reset();
     cpu_.reset();  // fetches SSP/PC from the ROM vector table (or the Mega-CD BIOS)
     vdp_irq_level_ = vdp_.irq_level();
@@ -105,14 +110,7 @@ megacd::MegaCd& Emulator::attach_mega_cd(std::span<const u8> bios, bool cd_boot)
         expansion_irq_level_ = level;
         update_main_irq();
     });
-    // The mixer pulls the Mega-CD's audio at each output sample's time,
-    // converted to the sub CPU's timeline: sub_clock_ holds the sub time at
-    // master_clock_, and the sample is at most a slice or so away from it.
-    sound_.set_expansion_audio([this](s64 master_time, s32& left, s32& right) {
-        const s64 sub_time = sub_clock_.total() +
-            (master_time - master_clock_) * static_cast<s64>(megacd::MegaCd::kSubCpuClockHz) / master_clock_hz();
-        mega_cd_->render_audio(sub_time, left, right);
-    });
+    install_expansion_audio();
     // Word RAM: expansion base + 0x200000-0x3FFFFF (0x200000 when booting
     // from CD, 0x600000 with a cartridge).
     vdp_.set_dma_delay_predicate([cd_boot](u32 address) {
@@ -123,6 +121,44 @@ megacd::MegaCd& Emulator::attach_mega_cd(std::span<const u8> bios, bool cd_boot)
     memory_.attach_expansion(mega_cd_.get(), cd_boot);
     reset();
     return *mega_cd_;
+}
+
+sega32x::Sega32x& Emulator::attach_32x() {
+    sega32x_ = std::make_unique<sega32x::Sega32x>();
+    sega32x_->set_cartridge(memory_.rom());
+    sega32x_->set_ntsc(region_ == Region::NTSC);
+    // The 32X layer goes over each Mega Drive line as soon as it is drawn,
+    // so mid-frame changes (palette, frame buffer flip) land on the right
+    // lines. The frontend then shows the composed framebuffer as before.
+    vdp_.set_line_hook([this](int line, std::span<Framebuffer::Pixel> row, std::span<const u8> backdrop) {
+        sega32x_->compose_line(line, row, backdrop);
+    });
+    memory_.attach_32x(sega32x_.get());
+    install_expansion_audio();
+    reset();
+    return *sega32x_;
+}
+
+void Emulator::install_expansion_audio() {
+    // The mixer pulls each device's audio at each output sample's time,
+    // converted to that device's timeline: sub_clock_ / sh2_clock_ hold its
+    // time at master_clock_, and the sample is at most a slice or so away.
+    sound_.set_expansion_audio([this](s64 master_time, s32& left, s32& right) {
+        const s64 ahead = master_time - master_clock_;
+        if (mega_cd_) {
+            const s64 sub_time = sub_clock_.total() +
+                ahead * static_cast<s64>(megacd::MegaCd::kSubCpuClockHz) / master_clock_hz();
+            mega_cd_->render_audio(sub_time, left, right);
+        }
+        if (sega32x_) {
+            const s64 sh2_time = sh2_clock_.total() + ahead * static_cast<s64>(sega32x::Sega32x::kSh2ClockNumerator) /
+                                                          static_cast<s64>(sega32x::Sega32x::kSh2ClockDenominator);
+            s32 l = 0, r = 0;
+            sega32x_->render_audio(sh2_time, l, r);
+            left += l;
+            right += r;
+        }
+    });
 }
 
 double Emulator::sub_cpu_ratio() const noexcept {
@@ -173,13 +209,20 @@ void Emulator::run_frame() {
     // main -> sub (the sub CPU runs after the main CPU), the next slice for
     // sub -> main.
     //
+    // 32X lockstep: the same idea with the two SH-2s, which run after the
+    // 68000 in each slice (master, then slave) at exactly 3 SH-2 cycles per
+    // 68000 cycle (master clock x 3/7). The Mega Drive VDP's VBlank drives
+    // the 32X's frame-buffer flip and V interrupt.
+    //
     // CPU targets are absolute, so instruction overshoot in one slice is
     // automatically absorbed by the next one.
     // TODO: CPU reads of VDP state see it as of the slice start; sync lazily
     // on port access if a game needs sub-slice HV counter accuracy.
     const u64 start_frame = vdp_.frame();
     while (vdp_.frame() == start_frame) {
-        const int max_slice = mega_cd_ ? kMegaCdSliceMainCycles * kM68kClockDivider : kMaxSlice;
+        int max_slice = kMaxSlice;
+        if (mega_cd_) max_slice = std::min(max_slice, kMegaCdSliceMainCycles * kM68kClockDivider);
+        if (sega32x_) max_slice = std::min(max_slice, k32xSliceMainCycles * kM68kClockDivider);
         const int slice = std::min({vdp_.cycles_to_next_event(), kMaxSlice, max_slice});
         const s64 target = master_clock_ + slice;
 
@@ -196,8 +239,32 @@ void Emulator::run_frame() {
             active_ = Active::None;
         }
 
+        if (sega32x_) {
+            sh2_clock_.advance(slice);
+            active_ = Active::Sh2;
+            sega32x_->run_until(sh2_clock_.total());
+            active_ = Active::None;
+        }
+
         master_clock_ = target;
         vdp_.advance(slice);
+
+        if (sega32x_) {
+            // The vertical blanking period itself (not the status bit, which
+            // also reads 1 whenever the display is off).
+            const bool vblank = vdp_.line() >= vdp_.active_height();
+            if (vblank != vblank_) {
+                vblank_ = vblank;
+                sega32x_->set_vblank(vblank);
+            }
+            // Slices end exactly at HBlank start (a VDP event), so the edge
+            // is seen on the line it belongs to.
+            const bool hblank = vdp_.line_cycle() >= Vdp::kHBlankStart;
+            if (hblank != hblank_) {
+                hblank_ = hblank;
+                sega32x_->set_hblank(hblank);
+            }
+        }
     }
 
     sound_.sync(master_clock_);  // complete the frame's audio
@@ -237,6 +304,7 @@ s64 Emulator::current_master_time() const noexcept {
     case Active::M68k: return (cpu_.cycles() - cpu_cycle_origin_) * kM68kClockDivider;
     case Active::Z80:  return z80_time_;
     case Active::SubCpu: break;  // no timed devices on the sub CPU's bus yet
+    case Active::Sh2: break;     // nor on the SH-2s' (PWM is to come)
     case Active::None: break;
     }
     return master_clock_;

@@ -54,3 +54,26 @@ Task: Implement the CDC class. It needs to handle the CDC registers, the host in
 
 Context: The Mega-CD includes a custom Graphics ASIC that allows the Sub-CPU to perform hardware rotation, scaling, and stamping of graphics into the Word RAM, which the Main-CPU VDP can then display.
 Task: Implement the SegaCD_ASIC rendering pipeline. It must process the ASIC registers (stamping size, map data pointer, vector table pointer). Write the core mathematical logic for the 2D affine transformation (rotation, scaling) that translates a source bitmap/tile into a destination buffer in Word RAM, respecting cell-based layouts.
+
+# 32X
+
+# Prompt 1: Overall Structure of the 32X and Communication Registers (Sys Regs)
+
+Context: Our Mega Drive and Mega-CD cores are fully functional. We are now adding Sega 32X support. The 32X maps its system control registers to the Main-CPU space at 0xA15100 - 0xA1517F. It features two Hitachi SH-2 CPUs (Master and Slave) and 256KB of shared SDRAM.
+Task: Create the foundation for a Sega32X subsystem. Implement the 32X_Registers structure handling the Adapter Control, Interrupt Control, and Bank Switching. Write the code for the Main-CPU (68k) to communication registers like the DMAC / Command Registers (0xA15120 - 0xA1512F) used to pass messages between the 68k and the dual SH-2s. Set up the memory mapping structure for the 256KB SDRAM.
+
+# Prompt 2: Skeleton and Interfacing of SH-2 Processors
+
+Note : Comme pour le 68000, vous utiliserez probablement un cœur SH-2 existant (comme une adaptation de MAME ou un interpréteur C++ propre).
+Context: I am integrating a dual SH-2 CPU interpreter core into our 32X project. The Master and Slave SH-2s run at 23 MHz, while our Main-CPU 68k runs at 7.67 MHz.
+Task: Update our emulation stepper/loop to include both SH-2 CPUs running alongside the 68k. Design the shared memory map for the SH-2 processors, handling cached (0x06000000) and uncached (0x26000000) access regions to SDRAM, Framebuffer, and Palette RAM. Ensure that the Master/Slave ID is correctly identified via the SYSCR (System Control Register) status or CPU initialization vectors.
+
+# Prompt 3: The 32X VDP and Video Overlay
+
+Context: The 32X VDP features two 128KB Framebuffers (used in a ping-pong fashion via a frame blank switch) and outputs in 15-bit direct color or indexed modes. This output must be mixed with the Mega Drive VDP layer.
+Task: Implement the 32X_VDP class. Include structures for the two 128KB Framebuffer banks and the 512-byte Palette RAM (CRAM). Implement the Line Table and Bitmap drawing modes (Direct Color, Palette, and Run-Length Encoded). Finally, write the composition logic that takes the finalized 32X framebuffer and overlays it on top of the Mega Drive VDP frame buffer, respecting transparency pixels/priorities before passing the final texture to SDL.
+
+# Prompt 4: Exception Handling and Timed Interrupts (PWM & Timers)
+
+Context: The 32X relies on frequent interrupts to synchronize the 68k and the SH-2s, particularly H-Blank, V-Blank, and PWM timers.
+Task: Implement the interrupt controller for the SH-2s. Write the logic that translates a 68k register write or a VDP event into an SH-2 interrupt vector (e.g., Level 14 for V-Blank, Level 12 for H-Blank, Level 6 for PWM). Include a basic skeleton for the PWM audio registers to prevent games from freezing while waiting for audio buffer clear flags.

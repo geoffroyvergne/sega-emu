@@ -29,6 +29,7 @@ Mega-CD support has started: the foundation (sub CPU, its memories and the commu
 | Z80 CPU | ✅ [superzazu/z80](https://github.com/superzazu/z80) core. Full Z80 memory map: RAM, YM2612, bank register and 68000 window, VDP/PSG. VBlank interrupt; paused while the 68000 holds its bus; reset line |
 | Sound | ✅ YM2612 via [ymfm](https://github.com/aaronsgiles/ymfm), including the DAC, timers and the model 1 "ladder effect". SN76489 PSG (own implementation). The chips are brought up to the current emulated time before every access, so DAC samples play at the right timing. DC-blocking output filter. Stereo, ~53.3 kHz |
 | Mega-CD | 🟡 Foundation, now running in the scheduler with the sub CPU in lockstep (`--bios`): sub CPU, 512 KB PRG-RAM with write protect, 256 KB Word RAM in 2M and 1M modes (with the 1M cell and dot image views), gate array communication registers, reset/bus request, INT2. CD drive with its command interface (CDD, INT4) and the CD data controller (LC8951, DMA, INT5), reading `.cue`/`.bin`/`.iso` images (or ZIPs of them). Graphics ASIC (stamp rotation/scaling into Word RAM, INT1), timer (INT3) and stopwatch. Sound: the PCM chip (RF5C164) and CD-DA, mixed into the console output. Backup RAM, pre-formatted. **Boots real games with the real BIOS** (tested with the EU BIOS: Road Avenger, Sonic CD) |
+| 32X | 🟡 Both SH-2s run (own interpreter) in lockstep with the 68000 at exactly 3× its clock, from their boot ROMs once the 68000 releases them, or, without a 32X BIOS, from a built-in boot that loads the cartridge's SH-2 program itself. 32X cartridges are recognised on load; Doom, Virtua Fighter (into a fight) and Sonic Robo Blast 2 reach their title screens or beyond; Virtua Racing Deluxe runs its attract-mode race; Star Wars Arcade plays its 3D intro; After Burner Complete reaches its title screen. System registers (adapter control, SH-2 reset, interrupts, ROM banking, DREQ FIFO, mailboxes), 256 KB SDRAM, both frame buffers with the overwrite image and the VBlank flip, palette RAM, cached and cache-through address maps. Interrupts: V (VBlank), H (every N lines, HEN), CMD (from the 68000) and the PWM timer, with HBLK/VBLK status. The 32X picture (line table; packed-pixel, direct-colour and run-length modes) is drawn over the Mega Drive's with its priority rules. PWM sound (FIFOs, timer interrupt, audio mixed with the Mega Drive's). The 68000 vector page in 32X mode. The SH-2 DMA controller, fed by the 68000's FIFO (DREQ0) and the PWM timer (DREQ1). |
 | Cartridge extras | ❌ No battery-backed save RAM, no bank switching for ROMs over 4 MB, no TMSS |
 
 When no ROM is given, the frontend shows scrolling colour bars (inverted while Start is held) so you can check video, timing and input.
@@ -154,6 +155,71 @@ Still to come:
 - saving the backup RAM to a file;
 - subcode reading (INT6).
 
+### 32X
+
+[`sega32x/`](core/include/md/sega32x/) and the SH-2 core ([`sh2.hpp`](core/include/md/sh2.hpp)) run the 32X's two CPUs alongside the 68000 and draw its picture over the Mega Drive's. `Emulator::attach_32x()` plugs it in, and `Sega32x::load_boot_roms()` takes the SH-2 BIOS (2 KB master, 1 KB slave), which is optional. The frontend attaches the 32X by itself when the cartridge is a 32X one (`is_32x_rom()`: "MARS CHECK MODE" at `0x3C0`, the standard start-up code's `MARS` check at `0x40C`, or "32X" in the console name), so `megadrive doom.32x` is enough.
+
+**Built-in boot** (no BIOS). When the SH-2s leave reset without boot ROMs, `Sega32x::hle_boot()` does the BIOS's job from the cartridge's 32X header: it copies the SH-2 program (source `0x3D4`, SDRAM destination `0x3D8`, size `0x3DC`) into SDRAM, sets each CPU's VBR (`0x3E8` / `0x3EC`), GBR (`0x20004000`), PC (entry points `0x3E0` / `0x3E4`) and stack (from its own vector table), and posts what the BIOS leaves for the start-up code: "M_OK" in COMM0–1, "S_OK" in COMM2–3 and the header checksum in COMM4. The 68000 start-up code waits for both OKs, finishes its setup, then clears them, which is what the SH-2 programs wait for. Without that handshake the SH-2s take the VDP (FM) before the 68000 is done with it, and the screen stays black.
+
+**68000 vector page.** In 32X mode (ADEN = 1, RV = 0), `0x000000–0x0000FF` is the adapter's own vector table: each exception vector points into the jump table 32X cartridges keep at `0x880200`, and the H interrupt vector at `0x70` is writable. `0xC0–0xFF` holds the BIOS's helper that turns RV off. RV = 1 brings the cartridge back at `0`.
+
+**SH-2 core** ([sh2.cpp](core/src/cpu/sh2.cpp)): written for this project. MAME's core depends on MAME's device framework and PicoDrive's is non-commercial, while this project's other dependencies are MIT/BSD.
+- **CPU:** the full SH-2 instruction set, including delayed branches (a branch and its delay slot execute as one step, so nothing can interrupt between them; the slot runs with PC already at the branch target, so a PC-relative load there reads relative to the target, which After Burner Complete relies on; an illegal slot instruction saves the branch's address), DIV0/DIV1 step division, MAC.W/MAC.L with saturation, exceptions and TRAPA.
+- **Interrupts:** the IRL pins, auto-vectored (level 14 → vector 71 … level 6 → 67), and SLEEP until an interrupt arrives.
+- **Timing:** documented issue cycles (taken branches, multiplies, MAC and exceptions cost more). Memory wait states aren't counted.
+- **On-chip:** the division unit (32/32 and 64/32, overflow flag, register mirrors), the free-running timer's counter, and the 4 KB cache data array usable as RAM. The DMA controller (DMAC): both channels, byte / word / long / 16-byte units with fixed, incrementing or decrementing addresses, TE (cleared only by software) and DMAOR.DME. Auto-request transfers run to their end at once; module-request channels move one unit per external request (`Sh2::dma_request`, the DREQ pins). With IE, the end interrupts at IPRA's DMAC level through VCRDMA0/1, and an IRL at the same level wins. The watchdog timer (WDT): keyed word writes (0xA5 for WTCSR, 0x5A for WTCNT), the counter at clock / 2 to 8192, OVF (cleared only by software), and in interval mode an interrupt at IPRA's WDT level through VCRWDT. Star Wars Arcade's master waits for it. A sleeping CPU still counts its timers and wakes on their interrupts. Watchdog mode's reset and the serial port aren't modelled. The cache itself isn't modelled: cached reads always go to memory, which only matters for software that relies on stale cache contents.
+- **Master or slave:** each CPU starts from its own boot ROM's reset vectors (PC at 0, stack pointer at 4), and its BCR1 register (`FFFFFFE0`) reads MASTER = 0 on the master and 1 on the slave. Code shared by both CPUs uses that bit to tell them apart.
+
+**Scheduling.** With a 32X attached, each scheduler slice is at most 32 68000 cycles. The SH-2 clock is the master clock × 3/7, exactly three times the 68000's, and an exact integer converter gives each slice its share. In each slice the 68000 runs, then the master SH-2, then the slave, all to the same point in time. Targets are absolute, so overshoot is absorbed by the next slice. The SH-2s stay in reset until the 68000 sets RES, then start from their vectors. The Mega Drive VDP's vertical blanking (taken from its line counter) flips the 32X frame buffers and raises the V interrupt on both SH-2s.
+
+**SH-2 memory map** (`Sega32x::Sh2Bus`). Address bit 29 selects the cache: `0x0…` goes through the SH-2 cache and `0x2…` bypasses it, but both reach the same memory. Shared data is normally accessed cache-through.
+
+| Cached | Cache-through | |
+|---|---|---|
+| `00000000` | `20000000` | boot ROM (each CPU its own) |
+| `00004000` | `20004000` | system registers (`SystemRegisters`) |
+| `00004100` | `20004100` | 32X VDP registers |
+| `00004200` | `20004200` | palette, 256 entries |
+| `02000000` | `22000000` | cartridge ROM |
+| `04000000` | `24000000` | frame buffer, 128 KB |
+| `04020000` | `24020000` | frame buffer, overwrite image (zero bytes are skipped) |
+| `06000000` | `26000000` | SDRAM, 256 KB, mirrored every 256 KB |
+
+**Frame buffers and palette** ([vdp32x.hpp](core/include/md/sega32x/vdp32x.hpp)):
+- **Two frame buffers:** the CPUs draw into one while the other is shown. FS (`410A` bit 0) selects which. A new value takes effect at the next VBlank, or at once if written during VBlank or while the 32X picture is blank (mode 0). Reading FS gives the current one. Games rely on the blank-mode case to write both buffers' line tables in a row while the screen is off: Virtua Fighter does it before each fight, and without it one buffer keeps the previous screen's line table, so the fight shows interleaved with the player select.
+- **Autofill:** fills a run of words within one 256-word line.
+- **Line table:** a displayed frame buffer starts with one word per line, giving the word address of that line's pixels.
+- **Modes** (register `4100` bits 1–0): blank; *packed pixel*, one byte per pixel indexing the palette (screen shift starts one pixel later); *direct colour*, one 15-bit colour per word; *run length*, words of (run − 1) << 8 | palette index. Colours are BGR555 plus a priority bit P (bit 15).
+- **Mixing with the Mega Drive:** the Mega Drive VDP calls a hook after drawing each visible line, telling which pixels were backdrop, and the 32X draws its line over it. Where the Mega Drive shows backdrop, the 32X pixel always shows. Elsewhere, the 32X pixel shows if its P bit differs from PRI (register `4100` bit 7). With PRI = 0 the Mega Drive is in front except where P = 1; with PRI = 1 the 32X is in front except where P = 1, as PicoDrive models it. Drawing line by line means palette changes and the buffer flip land on the right lines. The frontend keeps uploading the one composed framebuffer to SDL, unchanged. In H32 mode only the left 256 of the 32X's 320 pixels show.
+- **FM ownership:** the FM bit decides which side reaches the VDP, palette and frame buffer. FM = 1 gives them to the SH-2s; FM = 0 gives them to the 68000, at `A15180`, `A15200` and `840000`/`860000`.
+
+**System registers** ([system_registers.hpp](core/include/md/sega32x/system_registers.hpp)): one register file seen by the 68000 at `A15100–A1517F` and by each SH-2 at `20004000–2000403F`.
+- **Adapter control** (`A15100`): ADEN switches 32X mode on, RES releases the SH-2s, and FM is shared by all three CPUs.
+- **Interrupt control** (`A15102`): INTM/INTS raise the CMD interrupt on the master or slave. Each bit stays set until that SH-2 writes its CMD clear register (`401A`).
+- **Interrupts:** each source drives a level on the SH-2's IRL pins, and the SH-2 takes it through its auto-vector (64 + level / 2) when the level is above its SR mask:
+
+  | Source | Raised by | Level | Vector |
+  |---|---|---|---|
+  | VRES | the reset button | 14 | 71 |
+  | V | start of VBlank (Mega Drive VDP timing) | 12 | 70 |
+  | H | HBlank, every H count + 1 lines (`4004`); VBlank lines only with HEN (`4000` bit 7); the counter reloads at VBlank | 10 | 69 |
+  | CMD | the 68000 setting INTM/INTS (`A15102`) | 8 | 68 |
+  | PWM | the PWM timer, every TM samples | 6 | 67 |
+
+  V, H and PWM go to both CPUs, and each CPU's mask (`4000` bits 3–0) decides whether it takes them. A source stays asserted until the CPU writes its clear register (`4014`–`401C`).
+- **PWM** ([pwm.hpp](core/include/md/sega32x/pwm.hpp)):
+  - **Registers** (`A15130` / `4030`): control (channel routing: each output off, from its own channel or from the other one; plus TM and RTP from the SH-2 side), the cycle register (one sample every cycle − 1 SH-2 cycles, e.g. 1047 → 22 kHz), and left, right and mono pulse widths.
+  - **FIFOs:** each channel has a 3-word FIFO that drains one word per sample, so the FULL/EMPTY flags games poll behave as on hardware and their feeding loops don't stall.
+  - **Timer:** raises the PWM interrupt every TM samples (0 = 16).
+  - **Audio:** a pulse width w out of a period of p SH-2 clocks becomes a level of (2w − p) / p × 16384, so half the period is silence (as is a channel never fed). Each sample's routed level is kept with its SH-2 time, and the mixer reads the outputs at each output sample's time, interpolating between PWM samples (22 kHz is typical) and adding them to the Mega Drive's sound (and the Mega-CD's, if both are attached) before the DC filter. The mixer can run up to a frame behind the SH-2s (when nothing touches the sound chips mid-frame), so the PWM keeps a few hundred milliseconds of samples.
+  - **DMA refill:** with RTP set, each timer event also requests one SH-2 DMA unit (DREQ1, channel 1), which games point at the L/R or mono registers.
+- **Bank set** (`A15104`): the 1 MB of cartridge ROM at `0x900000`. The first 512 KB are at `0x880000`.
+- **DREQ** (`A15106–A15112`): source, destination, length and the 8-word FIFO. The FIFO drives DREQ0: as soon as it holds words, an SH-2 whose DMA channel 0 waits for requests takes them, normally from `20004012` into SDRAM. Virtua Racing loads data this way and waits for the transfer to end, so it stays on a black screen without it.
+- **Communication** (`A15120–A1512F`): eight 16-bit mailboxes shared by the three CPUs.
+- **ID:** "MARS" at `A130EC`.
+
+**Still to come:** VRES from a reset button, DMA bus timing (transfers are instant), and a frontend option to load a real 32X BIOS instead of the built-in boot.
+
 ## Project layout
 
 ```
@@ -170,7 +236,9 @@ sega-emu/
 │   │   ├── sound.hpp              #     sound chips + mixer, timed by the scheduler
 │   │   ├── ym2612.hpp, psg.hpp    #     FM chip (hides ymfm), SN76489 PSG
 │   │   ├── bus.hpp                #     Bus68k / BusDevice interfaces
-│   │   └── megacd/                #     Mega-CD: registers, PRG-RAM, Word RAM, sub CPU
+│   │   ├── megacd/                #     Mega-CD: registers, PRG-RAM, Word RAM, sub CPU
+│   │   ├── sega32x/               #     32X: system registers, SDRAM, frame buffers, SH-2 address map
+│   │   └── sh2.hpp                #     SH-2 CPU (own interpreter)
 │   │   ├── framebuffer.hpp        #     ARGB8888 output buffer (max 320×240)
 │   │   ├── input.hpp              #     6-button pad state
 │   │   └── types.hpp              #     u8/u16/u32…, Region
@@ -210,6 +278,8 @@ Release build:
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release -j
 ```
+
+32X games need the Release build: the Debug build runs Doom at about 40% of full speed. When the emulator can't keep up, the audio queue runs dry between frames and the sound crackles, so the frontend prints a warning (with the speed) after a few seconds.
 
 ### CMake options
 
@@ -324,7 +394,7 @@ ctest --test-dir build --output-on-failure
 ./build/tests/frontend_tests
 ```
 
-There are 184 tests (178 core, 6 frontend), using a small built-in framework ([`tests/test.hpp`](tests/test.hpp), no external dependency):
+There are 241 tests (235 core, 6 frontend), using a small built-in framework ([`tests/test.hpp`](tests/test.hpp), no external dependency):
 
 - [`memory_tests.cpp`](tests/memory_tests.cpp): byte order, mirroring, 24-bit address wrap, Z80 bus arbitration, I/O registers, VDP/PSG port decoding.
 - [`cpu_tests.cpp`](tests/cpu_tests.cpp): hand-assembled 68000 programs run through Moira → bridge → Memory. Covers reset vectors, interrupts with acknowledge, address errors (which also proves the Moira config is in place), and disassembly.
@@ -333,7 +403,7 @@ There are 184 tests (178 core, 6 frontend), using a small built-in framework ([`
 - [`vdp_render_tests.cpp`](tests/vdp_render_tests.cpp): tile decoding, flips, palettes, scrolling modes, plane priority, transparency, window, display off. Sprites: multi-cell layout, flips, link order, collision, priority against planes, per-line sprite and pixel limits, X=0 masking. Also a full-system test in which a 68000 program uploads graphics by DMA and the frame is checked pixel by pixel.
 - [`sound_tests.cpp`](tests/sound_tests.cpp): PSG tone frequency, silence and noise. YM2612 440 Hz FM tone and key-off release, timers A and B (including timer B's free-running prescaler), DAC. Z80 running from RAM, the bank window, PSG writes, the VBlank interrupt, pausing while the 68000 holds the bus. Also a full-system test in which a Z80 program plays a DAC square wave into the frame's audio.
 - [`input_tests.cpp`](tests/input_tests.cpp): 3-button protocol, the full 6-button sequence and its timeout, TH as input, nothing connected, routing from `Emulator::set_controller`. Also a full-system test in which a 68000 program reads the pad.
-- [`rom_loader_tests.cpp`](tests/rom_loader_tests.cpp): ZIP archives built in memory by the test. Covers stored and deflate entries, which entry is chosen, CRC checking, and corrupt, encrypted, truncated and empty archives; also files on disk, raw and zipped, plus bad names and sizes.
+- [`rom_loader_tests.cpp`](tests/rom_loader_tests.cpp): ZIP archives built in memory by the test. Covers stored and deflate entries, which entry is chosen, CRC checking, and corrupt, encrypted, truncated and empty archives; also files on disk, raw and zipped, plus bad names and sizes. Recognising 32X cartridges by their header, their start-up code or their console name.
 - [`frontend_input_tests.cpp`](tests/frontend_input_tests.cpp) (in `frontend_tests`): the gamepad-to-Mega-Drive mapping, stick dead zone, opposite directions cancelling, and merging keyboard and gamepad input. Also the real SDL path, using SDL3 **virtual gamepads**: hot-plugging, player assignment, buttons and stick, disconnecting and reconnecting. Real devices are hidden during the tests, so they don't depend on what's plugged in.
 - [`megacd_tests.cpp`](tests/megacd_tests.cpp): who may read or write each communication register, reset and bus request, the PRG-RAM window rules and write protect, Word RAM 2M handover, bank interleave and mode switches, the 1M ping-pong swap, and INT2. The 1M views: the cell image layout, checked at every byte of the bank against an independent description (and shown to be a one-to-one mapping), cell view reads and writes, and dot image pixels with all four priority modes. Also two end-to-end tests: the sub CPU booting from PRG-RAM and taking INT2, and the main and sub 68000s exchanging a command and a reply.
 - [`megacd_scheduler_tests.cpp`](tests/megacd_scheduler_tests.cpp): the exact clock conversion (one second gives 12,500,000 sub cycles); the main/sub ratio measured inside the emulator; a BIOS-style flag handshake (each CPU waits for the other, about 1,300 round trips per frame); the latency of INT2 from main to sub; and an expansion interrupt reaching the main CPU through the shared IPL pins. Set `MD_TEST_VERBOSE=1` to print the measured values.
@@ -357,6 +427,9 @@ There are 184 tests (178 core, 6 frontend), using a small built-in framework ([`
   - flips, 180° rotation, and the algebra of the 90° steps (which holds whatever the direction);
   - transparency and repeat, 32×32 stamps, the dot offset and the three priority modes;
   - the busy flag and INT1 timing, and the 2M-only rule.
+- [`sega32x_tests.cpp`](tests/sega32x_tests.cpp): the power-on state and "MARS" ID; adapter control (ADEN, the SH-2 reset callback, the shared FM bit, the CART bit); the mailboxes seen by all three CPUs (bytes, words, SH-2 longs, cached and cache-through); the CMD handshake (68000 posts and rings, the master takes level 8, clears it, replies) and the slave's request waiting for its mask; interrupt priorities and VRES; the DREQ FIFO (order, FULL/EMPTY, byte pairs, length count, flush); ROM banking from both sides; the SDRAM map and its mirrors; per-CPU boot ROMs; and the 32X on the real 68000 bus through the `Emulator`. Frame buffers and palette: FM deciding which side sees them, the overwrite image, the FS flip at VBlank (and at once in VBlank or blank mode), autofill. With both SH-2s running in the emulator: they stay in reset until the 68000 sets RES, then boot from their own vectors, and one shared program tells master from slave by BCR1; the 68000 posts a command and raises INTM, and the sleeping master's interrupt handler answers and clears it; both SH-2s count V interrupts frame by frame; and the SH-2 clock is exactly 3/7 of the master clock over a frame. Interrupts: the source → level → vector table and the IRL pins following sources as they come and go; H interrupts counted over real frames (every 4th line, every line, and with HEN through VBlank); the HBLK bit. PWM: the 68000's limited control bits, FIFO flags, replacing the newest entry when full, draining exactly at the sample period, stopping when the channels are off, the timer interrupt every TM samples; and an SH-2 loop feeding ten samples while polling FULL, which must finish. DMA: twelve words written by the 68000 reaching SDRAM through the master's channel 0 (more than the FIFO holds, so it drains as it fills), and the PWM timer with RTP pulling samples from SDRAM through the slave's channel 1, stopping when RTP is cleared. PWM audio: width → level, channel routing (normal, swapped, off), silence before the first sample, interpolation and holding over time, the level before the oldest sample for a late reader, and a step written by the 68000 reaching the emulator's mixed output. Boot without a BIOS: the SH-2 program copied into SDRAM (and nothing else), each CPU's PC, VBR, GBR and stack from the header, and the M_OK / S_OK / checksum handshake. The 68000 vector page: its jump-table vectors, the writable H vector, and RV putting the cartridge back.
+- [`sh2_tests.cpp`](tests/sh2_tests.cpp): the SH-2 core, with programs assembled by a small helper ([`sh2_asm.hpp`](tests/sh2_asm.hpp)). Covers reset vectors, loops, immediate sign extension, delay slots (BSR/RTS, BF/S; PC-relative loads in a slot reading from the target; illegal slot instructions), PC-relative loads and MOVA alignment, and the manual's three division idioms (unsigned 32/16 and 64/32, signed 16/16 in every sign combination). Also MUL.L/DMULS.L/MAC.W, TRAPA and RTE, an IRL interrupt waking SLEEP (auto-vector, mask raised to the level), a level held off by the mask, and illegal instructions. On-chip: the BCR1 master/slave bit and its key-protected writes, the division unit (32/32, 64/32, mirrors, overflow), the timer's count rate, the cache data array, and the disassembler. DMA: auto-request transfers in every unit size and address mode, TE set at the end and only cleared by software, DMAOR.DME gating, one unit per external request, and the end interrupt (IPRA level, VCRDMA vector, IRL winning a tie, none once TE is cleared). The watchdog: keyed writes only, counting and overflow at the selected rate, the interval interrupt waking a sleeping CPU at the WDT level and vector, OVF cleared only by writing 0, and no interrupt in watchdog mode.
+- [`sega32x_video_tests.cpp`](tests/sega32x_video_tests.cpp): the 32X picture. Colour conversion; the line table, including wrapping round the frame buffer; direct colour; packed pixel with the screen shift; run length with runs cut at 320 pixels; blank mode; all eight mixing cases (P × PRI × Mega Drive backdrop or not); and the full path, in which the 68000 sets up a picture, the frame buffers flip at VBlank, and the result is checked in the emulator's framebuffer (what the frontend shows), then disappears when 32X mode is turned off.
 - [`emulator_tests.cpp`](tests/emulator_tests.cpp): refresh rates, frame stepping, region setup.
 
 ## Roadmap
@@ -368,5 +441,6 @@ Roughly in order:
 3. **Cartridge features**: save RAM, bank switching for large ROMs, TMSS.
 4. **Accuracy**: sub-slice VDP sync on port access, the TAS write-back quirk, Moira precise-timing mode.
 5. **Mega-CD**: saving the backup RAM, subcode (INT6), and testing more games.
+6. **32X**: an option to use a real 32X BIOS, and DMA bus timing.
 
 Known simplifications are marked with `TODO` comments at the place in the code where they apply.

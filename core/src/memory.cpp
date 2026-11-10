@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "md/sega32x/sega32x.hpp"
+
 namespace md {
 
 namespace {
@@ -68,9 +70,14 @@ void Memory::reset() {
 // Public access functions
 // ===========================================================================
 
+bool Memory::is_32x(u32 address) const noexcept {
+    return sega32x_ && sega32x_->claims(address);
+}
+
 u8 Memory::read_byte(u32 address) {
     address &= kAddressMask;
 
+    if (is_32x(address))          return sega32x_->read8(address);
     if (is_expansion(address))    return expansion_->read8(address);
     if (address < kRomEnd)        return rom_byte(address);
     if (address >= kRamAreaStart) return ram_[address & kRamMask];
@@ -84,6 +91,7 @@ u8 Memory::read_byte(u32 address) {
 u16 Memory::read_word(u32 address) {
     address &= kAddressMask;
 
+    if (is_32x(address)) return sega32x_->read16(address);
     if (is_expansion(address)) return expansion_->read16(address);
     if (address < kRomEnd) {
         return make_word(rom_byte(address), rom_byte(address + 1));
@@ -111,6 +119,7 @@ u32 Memory::read_long(u32 address) {
 
 u16 Memory::peek_word(u32 address) const noexcept {
     address &= kAddressMask;
+    if (is_32x(address)) return sega32x_->peek_word(address);
     if (address < kRomEnd) {
         return make_word(rom_byte(address), rom_byte(address + 1));
     }
@@ -123,6 +132,7 @@ u16 Memory::peek_word(u32 address) const noexcept {
 void Memory::write_byte(u32 address, u8 value) {
     address &= kAddressMask;
 
+    if (is_32x(address)) { sega32x_->write8(address, value); return; }
     if (is_expansion(address)) { expansion_->write8(address, value); return; }
     if (address < kRomEnd) return;  // ROM is read-only (SRAM/mappers: TODO)
     if (address >= kRamAreaStart) { ram_[address & kRamMask] = value; return; }
@@ -134,6 +144,7 @@ void Memory::write_byte(u32 address, u8 value) {
 void Memory::write_word(u32 address, u16 value) {
     address &= kAddressMask;
 
+    if (is_32x(address)) { sega32x_->write16(address, value); return; }
     if (is_expansion(address)) { expansion_->write16(address, value); return; }
     if (address < kRomEnd) return;
     if (address >= kRamAreaStart) {

@@ -17,6 +17,9 @@ add_executable(core_tests
     megacd_cd_tests.cpp
     megacd_graphics_tests.cpp
     megacd_sound_tests.cpp
+    sega32x_tests.cpp
+    sega32x_video_tests.cpp
+    sh2_tests.cpp
 )
 target_link_libraries(core_tests PRIVATE md::core md::warnings)
 

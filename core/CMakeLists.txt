@@ -79,6 +79,7 @@ add_library(md_core STATIC
     src/emulator.cpp
     src/memory.cpp
     src/cpu/m68k.cpp
+    src/cpu/sh2.cpp
     src/video/vdp.cpp
     src/cpu/z80.cpp
     src/audio/psg.cpp
@@ -94,6 +95,10 @@ add_library(md_core STATIC
     src/megacd/pcm.cpp
     src/megacd/disc.cpp
     src/megacd/graphics_asic.cpp
+    src/sega32x/system_registers.cpp
+    src/sega32x/sega32x.cpp
+    src/sega32x/vdp32x.cpp
+    src/sega32x/pwm.cpp
 )
 add_library(md::core ALIAS md_core)
 

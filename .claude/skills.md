@@ -21,3 +21,9 @@
   - CDC (Sega CD Data Controller) & CD-ROM Drive: Emulation of ISO/BIN/CUE parsing, CD-DA audio streaming, and subcode reading.
   - Graphics ASIC: Hardware-accelerated cell-to-bitmap rendering, rotation, scaling, and texture mapping.
   - Hardware Synchronization: Sub-CPU/Main-CPU communication registers, timers, and specialized interrupts (Level 2 for Sub-CPU communication, Level 1 for Graphics ASIC, etc.).
+
+- **Sega 32X Hardware Emulation:**
+  - Dual SH-2 CPUs: Master and Slave Hitachi SH-2 RISC processors @ 23 MHz (cycle-accurate or fast instruction-accurate), sharing a common bus.
+  - 32X VDP: Framebuffers (two 128KB banks for ping-pong rendering), Palette RAM, Shift/Fill hardware, and video overlay logic merging 32X RGB frames with Mega Drive VDP layers.
+  - Memory Mapping & Security: 32X Gate Array registers (0xA15100 area), SDRAM (256KB), Framebuffer access protection, and ROM banking/decoding.
+  - PWM Sound: 32X PWM audio registers and stereo sound generation mixed with YM2612/PSG.

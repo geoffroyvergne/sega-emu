@@ -10,6 +10,8 @@
 
 namespace md {
 
+namespace sega32x { class Sega32x; }
+
 // Interfaces for chips that sit on the 68000 bus. Memory forwards accesses to
 // them so it never needs to know how the VDP or sound chips work internally.
 
@@ -34,12 +36,14 @@ public:
 //
 //   0x000000-0x3FFFFF  Cartridge ROM (up to 4 MB)
 //   0x400000-0x7FFFFF  Expansion (Mega-CD) — forwarded to attach_expansion()
-//   0x800000-0x9FFFFF  32X — unmapped, open bus
+//   0x840000-0x9FFFFF  32X frame buffer / ROM windows (attach_32x), else open bus
 //   0xA00000-0xA0FFFF  Z80 address space (8 KB RAM, YM2612) — needs Z80 bus
 //   0xA10000-0xA1001F  I/O: version register, controller ports, serial
 //   0xA11100           Z80 bus request
 //   0xA11200           Z80 reset
 //   0xA12000-0xA120FF  Mega-CD gate array registers (expansion device)
+//   0xA130EC-0xA130EF  32X ID "MARS" (attach_32x)
+//   0xA15100-0xA151FF  32X system and VDP registers (attach_32x)
 //   0xC00000-0xC0001F  VDP ports + PSG (mirrored up to 0xDFFFFF)
 //   0xE00000-0xFFFFFF  64 KB main RAM, mirrored every 64 KB (canonical 0xFF0000)
 //
@@ -98,6 +102,11 @@ public:
         cd_boot_ = cd_boot;
     }
 
+    // 32X (cartridge slot): receives the addresses Sega32x::claims(): its
+    // ID, its registers, its frame buffer / ROM windows at 0x840000 and, in
+    // 32X mode, its 68000 vector page at 0x000000.
+    void attach_32x(sega32x::Sega32x* device) noexcept { sega32x_ = device; }
+
     void attach_pad(int port, Gamepad* pad) noexcept {
         if (port >= 0 && port < 3) pads_[static_cast<std::size_t>(port)] = pad;
     }
@@ -142,6 +151,8 @@ private:
         return cd_boot_ && address < 0x40'0000;                           // CD boot: no cartridge
     }
 
+    [[nodiscard]] bool is_32x(u32 address) const noexcept;
+
     [[nodiscard]] u8   z80_area_read(u32 address);
     void               z80_area_write(u32 address, u8 value);
 
@@ -174,6 +185,7 @@ private:
     ByteDevice* psg_    = nullptr;
     std::array<Gamepad*, 3> pads_{};
     BusDevice* expansion_ = nullptr;
+    sega32x::Sega32x* sega32x_ = nullptr;
     bool cd_boot_ = false;
 };
 

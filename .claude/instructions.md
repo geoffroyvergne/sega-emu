@@ -13,3 +13,7 @@
 
 - **Dual-CPU Execution:** Emulate the Sub-CPU and Main-CPU using a fine-grained cycle interleaved loop or dynamic scheduling to prevent desynchronization during BIOS boot and hardware register polling.
 - **Memory Protection:** Implement strict access rules for Word RAM based on which CPU currently owns the bank (Main-CPU vs Sub-CPU). Return deterministic open-bus values on illegal reads.
+
+- **SH-2 Architecture Constraints:** Emulate the SH-2 instruction pipeline correctly, paying specific attention to delayed branches (`BRA`, `BSR`, `RTS`), which execute the instruction *after* the branch before jumping.
+- **Cache and Cache Addresses:** Account for SH-2 cache purging and the difference between cached (0x06000000) and uncached (0x26000000) memory spaces.
+- **Resource Contention:** Implement basic hardware bus arbitration or strict interleaving, as both SH-2s frequently access the same SDRAM and Framebuffers.

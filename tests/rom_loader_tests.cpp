@@ -1,6 +1,8 @@
 // ROM loading: raw images and ZIP archives (built in memory by the tests).
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -140,6 +142,21 @@ TEST(load_rom_file_raw_and_zip) {
     std::remove(zip_path.c_str());
     std::remove(fake_zip.c_str());
     std::remove(tiny.c_str());
+}
+
+TEST(detect_32x_cartridges) {
+    const auto with = [](u32 at, std::vector<u8> bytes) {
+        std::vector<u8> rom(0x800, 0);
+        std::copy(bytes.begin(), bytes.end(), rom.begin() + at);
+        return rom;
+    };
+    const auto text = [](const char* s) { return std::vector<u8>(s, s + std::strlen(s)); };
+    CHECK(md::is_32x_rom(with(0x3C0, text("MARS CHECK MODE"))));
+    CHECK(md::is_32x_rom(with(0x100, text("SEGA 32X        "))));
+    // Homebrew with renamed header fields: found by its start-up code.
+    CHECK(md::is_32x_rom(with(0x40C, {0x0C, 0xAD, 'M', 'A', 'R', 'S', 0x30, 0xEC})));
+    CHECK(!md::is_32x_rom(with(0x100, text("SEGA MEGA DRIVE "))));
+    CHECK(!md::is_32x_rom(std::vector<u8>(0x40, 0)));                // too small
 }
 
 TEST(detect_region_from_header) {

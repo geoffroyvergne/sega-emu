@@ -323,6 +323,10 @@ int main(int argc, char* argv[]) {
         emu.mega_cd()->insert_disc(std::move(disc));
     }
 
+    if (rom_path && md::is_32x_rom(rom.data)) {
+        emu.attach_32x();
+        std::printf("32X attached (built-in boot: no 32X BIOS needed)\n");
+    }
     if (rom_path) {
         emu.load_rom(rom.data);
         const auto regs = emu.cpu().registers();
@@ -413,6 +417,15 @@ int main(int argc, char* argv[]) {
     auto next_frame = Clock::now();
     bool running = true;
 
+    // Slowdown warning. When emulating a frame takes longer than a frame
+    // lasts, the audio queue runs dry between frames and the sound breaks up
+    // (heard as harsh crackling). Measured over windows of ~3 s of work, so
+    // one-off stalls don't count; reported once.
+    const int speed_window = static_cast<int>(std::lround(emu.refresh_rate() * 3));
+    int speed_frames = 0;
+    Clock::duration speed_busy{};
+    bool speed_warned = false;
+
     // Disc changes by drag and drop (multi-disc games). Opening a disc may
     // unpack a ZIP (seconds), so it runs on a worker thread while the game
     // keeps going; the swap happens when it's ready.
@@ -500,6 +513,7 @@ int main(int argc, char* argv[]) {
         for (int player = 0; player < frontend::InputManager::kPlayers; ++player) {
             emu.set_controller(player, input.state(player));
         }
+        const auto work_start = Clock::now();
         emu.run_frame();
         audio.push(emu.audio_samples());
 
@@ -523,6 +537,23 @@ int main(int argc, char* argv[]) {
         // --- Frame pacing ---------------------------------------------------
         next_frame += frame_duration;
         const auto now = Clock::now();
+
+        speed_busy += now - work_start;
+        if (++speed_frames == speed_window) {
+            const double speed = std::chrono::duration<double>(frame_duration * speed_frames).count() /
+                                 std::chrono::duration<double>(speed_busy).count();
+            if (speed < 0.95 && !speed_warned) {
+                speed_warned = true;
+                std::fprintf(stderr, "Running at %.0f%% of full speed: the sound will break up.\n", speed * 100);
+#ifndef NDEBUG
+                std::fprintf(stderr, "This is a Debug build. For full speed, build Release:\n"
+                                     "  cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release && "
+                                     "cmake --build build-release -j\n");
+#endif
+            }
+            speed_frames = 0;
+            speed_busy = {};
+        }
         if (next_frame > now) {
             const auto wait = std::chrono::duration_cast<std::chrono::nanoseconds>(next_frame - now);
             SDL_DelayPrecise(static_cast<Uint64>(wait.count()));

@@ -45,6 +45,11 @@ struct ConsoleRegion {
 // Returns nullopt if the header has no usable code.
 [[nodiscard]] std::optional<ConsoleRegion> detect_region(std::span<const u8> rom);
 
+// True for a 32X cartridge: "MARS CHECK MODE" at 0x3C0 (the 32X header the
+// boot reads), the standard 32X start-up code at 0x3F0 (its check for the
+// adapter's "MARS" ID), or "32X" in the console name at 0x100 ("SEGA 32X").
+[[nodiscard]] bool is_32x_rom(std::span<const u8> rom);
+
 // Loads a ROM from disk: a raw image, or a ZIP archive containing one
 // (detected by content, not by extension).
 [[nodiscard]] RomImage load_rom_file(const std::string& path);

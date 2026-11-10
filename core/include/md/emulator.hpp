@@ -11,6 +11,7 @@
 #include "md/m68k.hpp"
 #include "md/megacd/megacd.hpp"
 #include "md/memory.hpp"
+#include "md/sega32x/sega32x.hpp"
 #include "md/sound.hpp"
 #include "md/vdp.hpp"
 #include "md/z80.hpp"
@@ -61,6 +62,18 @@ public:
     // Sub-CPU cycles per main-CPU cycle (1.6296 NTSC, 1.6446 PAL).
     [[nodiscard]] double sub_cpu_ratio() const noexcept;
 
+    // --- 32X ---------------------------------------------------------------------
+    // While a 32X is attached, the scheduler runs the 68000 and both SH-2s in
+    // lockstep slices of at most this many 68000 cycles (3x as many SH-2
+    // cycles): the CPUs talk by polling shared registers and memory.
+    static constexpr int k32xSliceMainCycles = 32;
+
+    // Plugs a 32X into the cartridge slot (the cartridge goes into the 32X).
+    // Resets the machine. The SH-2s need their boot ROMs
+    // (Sega32x::load_boot_roms) to have anything to run.
+    sega32x::Sega32x& attach_32x();
+    [[nodiscard]] sega32x::Sega32x* sega32x() noexcept { return sega32x_.get(); }
+
     [[nodiscard]] const Framebuffer& framebuffer() const noexcept { return framebuffer_; }
 
     // Audio produced by the last run_frame(): interleaved stereo s16 at
@@ -83,8 +96,9 @@ public:
     [[nodiscard]] double refresh_rate() const noexcept;
 
 private:
+    void install_expansion_audio();
     // Which CPU is executing, so chip accesses can be timestamped.
-    enum class Active { None, M68k, Z80, SubCpu };
+    enum class Active { None, M68k, Z80, SubCpu, Sh2 };
 
     void render_test_pattern();
     void run_z80_until(s64 master_target);
@@ -106,6 +120,10 @@ private:
     Z80         z80_{memory_};
 
     std::unique_ptr<megacd::MegaCd> mega_cd_;
+    std::unique_ptr<sega32x::Sega32x> sega32x_;
+    ClockConverter sh2_clock_{sega32x::Sega32x::kSh2ClockNumerator, sega32x::Sega32x::kSh2ClockDenominator};
+    bool vblank_ = false;   // last VBlank / HBlank states passed to the 32X
+    bool hblank_ = false;
     bool cd_boot_ = false;
     ClockConverter sub_clock_{12'500'000, static_cast<u64>(master_clock_hz())};
     int vdp_irq_level_ = 0;

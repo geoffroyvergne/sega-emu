@@ -579,13 +579,21 @@ void Vdp::render_sprites(LineBuffer& out) {
 
 void Vdp::render_line() {
     if (line_ >= kMaxScreenHeight) return;
-
     const int width = active_width();
     auto row = framebuffer_.row(line_);
+    render_md_line(row, width);
+    if (line_hook_) {
+        line_hook_(line_, row.first(static_cast<std::size_t>(width)),
+                   std::span<const u8>(backdrop_mask_).first(static_cast<std::size_t>(width)));
+    }
+}
+
+void Vdp::render_md_line(std::span<Framebuffer::Pixel> row, int width) {
     const auto backdrop = cram_to_argb(cram_[regs_[7] & 0x3F]);
 
     if (!display_enabled()) {
         std::fill_n(row.begin(), width, backdrop);
+        std::fill_n(backdrop_mask_.begin(), width, u8{1});
         return;
     }
 
@@ -618,10 +626,14 @@ void Vdp::render_line() {
         else                                     found = false;
 
         row[static_cast<std::size_t>(x)] = found ? cram_to_argb(cram_[pixel & 0x3F]) : backdrop;
+        backdrop_mask_[static_cast<std::size_t>(x)] = found ? 0 : 1;
     }
 
     // Reg 0 bit 5: blank the leftmost 8 pixels (hides horizontal scroll seams).
-    if (regs_[0] & 0x20) std::fill_n(row.begin(), std::min(8, width), backdrop);
+    if (regs_[0] & 0x20) {
+        std::fill_n(row.begin(), std::min(8, width), backdrop);
+        std::fill_n(backdrop_mask_.begin(), std::min(8, width), u8{1});
+    }
 }
 
 } // namespace md

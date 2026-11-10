@@ -95,6 +95,13 @@ public:
     using Z80IntCallback = std::function<void(bool asserted)>;
     void set_z80_int_callback(Z80IntCallback callback) { z80_int_ = std::move(callback); }
 
+    // Called after each visible line is drawn into the framebuffer, with that
+    // row and, per pixel, whether the Mega Drive showed its backdrop there
+    // (1 = no plane or sprite pixel, display off, or the blanked left
+    // column). The 32X uses it to draw its layer over the line.
+    using LineHook = std::function<void(int line, std::span<Framebuffer::Pixel> row, std::span<const u8> backdrop)>;
+    void set_line_hook(LineHook hook) { line_hook_ = std::move(hook); }
+
     // Called by the CPU's interrupt-acknowledge cycle.
     void acknowledge_interrupt(int level);
 
@@ -160,6 +167,7 @@ private:
     //   bit 7 = priority, bits 5-4 = palette, bits 3-0 = colour (0 = transparent).
     using LineBuffer = std::array<u8, kMaxScreenWidth>;
     void render_line();
+    void render_md_line(std::span<Framebuffer::Pixel> row, int width);
     void render_plane(Plane plane, LineBuffer& out) const;
     void render_window(LineBuffer& out) const;
     void render_sprites(LineBuffer& out);
@@ -190,6 +198,8 @@ private:
     int  irq_level_     = 0;
     IrqCallback irq_callback_;
     Z80IntCallback z80_int_;
+    LineHook line_hook_;
+    std::array<u8, kMaxScreenWidth> backdrop_mask_{};
 
     // Sprite status flags (cleared by reading the status register) and the
     // dot-overflow state of the previous line (enables X=0 masking).

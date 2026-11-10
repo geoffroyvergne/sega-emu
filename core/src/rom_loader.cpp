@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <string_view>
 
 #if MD_HAVE_ZLIB
 #include <zlib.h>
@@ -199,6 +200,22 @@ RomImage extract_rom_from_zip(std::span<const u8> zip) {
     if (crc != entry->crc) return failure("CRC mismatch in " + entry->name + " (corrupt archive?)");
 #endif
     return rom;
+}
+
+bool is_32x_rom(std::span<const u8> rom) {
+    const auto text_at = [&](std::size_t at, std::string_view text) {
+        return rom.size() >= at + text.size() &&
+               std::equal(text.begin(), text.end(), rom.begin() + static_cast<std::ptrdiff_t>(at),
+                          [](char c, u8 b) { return static_cast<u8>(c) == b; });
+    };
+    if (text_at(0x3C0, "MARS CHECK MODE")) return true;
+    // The standard 32X start-up code at 0x3F0, which every 32X cartridge
+    // carries (homebrew may rename the header fields around it): it begins
+    // by checking for the adapter, cmpi.l #"MARS",($30EC,A5).
+    if (text_at(0x40C, std::string_view("\x0C\xAD" "MARS" "\x30\xEC", 8))) return true;
+    if (rom.size() < 0x110) return false;
+    const std::string_view console(reinterpret_cast<const char*>(rom.data() + 0x100), 16);
+    return console.find("32X") != std::string_view::npos;
 }
 
 std::optional<ConsoleRegion> detect_region(std::span<const u8> rom) {
